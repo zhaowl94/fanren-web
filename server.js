@@ -763,11 +763,13 @@ app.post('/api/chat', async (req, res) => {
       }
       const aiDesired = Math.max(Number(reportedMs) || 0, BEAT_MILESTONE[beat] || 0);
       const target = aiDesired > cur ? Math.min(aiDesired, plausible) : (cur < plausible ? cur + 1 : cur);
-      const recentAll = [...(history || [])]
-        .slice(-6)
-        .map((t) => String(t.content || ''))
-        .join('\n');
-      const dayDelta = Math.max(extractDayDelta(recentAll + '\n' + keywordText), 1);
+      // 4. 时间线：每轮默认推进 1 天；玩家是时间的主人——
+      // 玩家明确下令的时间跳跃（"修炼10年"）以玩家为准；
+      // AI 叙述中的时间推进（可能含累计回顾）最多计 30 天，大跳跃必须玩家下令。
+      const lastUser = [...(history || [])].reverse().find((t) => t.role === 'user');
+      const userDelta = extractDayDelta(lastUser ? String(lastUser.content || '') : '');
+      const narrDelta = Math.min(extractDayDelta(keywordText), 30);
+      const dayDelta = Math.max(userDelta, narrDelta, 1);
       day = Math.max(1, (Number(state.day) || 1) + dayDelta);
       const timeOk = day >= minDayFor(target);
       const final = milestoneKeywordsOk(ctx, target) && timeOk ? target : cur;

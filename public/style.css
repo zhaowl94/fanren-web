@@ -216,6 +216,16 @@ body {
 
 .panel-foot { margin-top: 12px; font-size: 12px; color: var(--ink-soft); text-align: center; line-height: 1.6; }
 
+/* 面板滚动条（古风细条） */
+#statePanel::-webkit-scrollbar { width: 6px; }
+#statePanel::-webkit-scrollbar-track { background: transparent; }
+#statePanel::-webkit-scrollbar-thumb {
+  background: rgba(176, 141, 62, 0.45);
+  border-radius: 3px;
+}
+#statePanel::-webkit-scrollbar-thumb:hover { background: rgba(176, 141, 62, 0.7); }
+#statePanel { scrollbar-width: thin; scrollbar-color: rgba(176, 141, 62, 0.45) transparent; }
+
 /* ============ 底部输入区 ============ */
 #inputArea {
   flex-shrink: 0;
@@ -513,12 +523,13 @@ body {
   #statePanel {
     width: auto;
     position: static;
-    max-height: none;
     margin: 10px 14px 0;
     display: grid;
     grid-template-columns: repeat(2, 1fr);
     gap: 0 16px;
     order: 2;
+    max-height: 300px; /* 窄屏也限制高度，超出滚动 */
+    overflow-y: auto;
   }
   .panel-title { grid-column: 1 / -1; }
   .panel-foot { grid-column: 1 / -1; }

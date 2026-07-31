@@ -165,7 +165,8 @@ body {
   position: sticky;
   top: 20px;
   overflow-y: auto;
-  max-height: calc(100vh - 120px);
+  /* 给底部输入区（选项/模式栏/输入框）留出高度，面板不得溢出压住选项 */
+  max-height: calc(100vh - 260px);
 }
 
 .panel-title {

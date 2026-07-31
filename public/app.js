@@ -26,6 +26,7 @@ const INITIAL_STATE = () => ({
   items: ['神秘小绿瓶'],
   milestone: 1, // 当前里程碑编号（见 /api/milestones）
   day: 1, // 时间线：第 N 天（韩立约 15 岁起）
+  npcs: {}, // 人物存亡状态（引擎维护，死亡由服务端确定性检测）
 });
 
 // 里程碑总表（启动时拉取，用于面板与横幅展示）
@@ -148,6 +149,7 @@ const el = {
   stDay: $('st-day'),
   stMilestone: $('st-milestone'),
   stItems: $('st-items'),
+  stNpcs: $('st-npcs'),
   stTip: $('st-tip'),
   slotModal: $('slotModal'),
   slotList: $('slotList'),
@@ -173,6 +175,29 @@ function renderStatePanel() {
     li.textContent = it;
     el.stItems.appendChild(li);
   });
+
+  // 人物存亡：死亡标记 ✝（含死亡天数）
+  el.stNpcs.innerHTML = '';
+  const npcs = s.npcs || {};
+  const names = Object.keys(npcs);
+  if (!names.length) {
+    const li = document.createElement('li');
+    li.className = 'npc-unknown';
+    li.textContent = '（剧情展开后更新）';
+    el.stNpcs.appendChild(li);
+  } else {
+    names.forEach((name) => {
+      const info = npcs[name] || {};
+      const li = document.createElement('li');
+      if ((info.status || '存活') === '死亡') {
+        li.className = 'npc-dead';
+        li.textContent = `✝ ${name}（第 ${info.diedAt ?? '?'} 天）`;
+      } else {
+        li.textContent = name;
+      }
+      el.stNpcs.appendChild(li);
+    });
+  }
 }
 
 function scrollToBottom() {
@@ -810,6 +835,12 @@ function applyStreamDone(msg) {
   // 时间线推进（引擎维护）
   if (typeof msg.day === 'number' && msg.day >= 1) {
     game.state.day = Math.round(msg.day);
+    renderStatePanel();
+  }
+
+  // 人物状态（引擎维护）
+  if (msg.npcs && typeof msg.npcs === 'object') {
+    game.state.npcs = msg.npcs;
     renderStatePanel();
   }
 

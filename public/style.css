@@ -189,6 +189,26 @@ body {
 .stat .label { color: var(--ink-soft); font-size: 13px; letter-spacing: 0.1em; }
 .stat .value { font-weight: 600; }
 .stat-items { display: block; }
+.stat-npcs { display: block; }
+.stat-npcs ul {
+  margin-top: 6px;
+  padding-left: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.stat-npcs li {
+  position: relative;
+  font-size: 12px;
+  padding: 2px 0;
+  color: var(--ink-soft);
+}
+.stat-npcs li.npc-dead {
+  color: var(--cinnabar);
+  font-weight: 600;
+}
+.stat-npcs li.npc-unknown { color: #b8a97e; font-style: italic; }
 .stat-milestone .value { color: var(--cinnabar); font-size: 13px; text-align: right; }
 .stat-items ul { margin-top: 6px; padding-left: 18px; list-style: none; }
 .stat-items li { position: relative; font-size: 13px; padding: 2px 0; }

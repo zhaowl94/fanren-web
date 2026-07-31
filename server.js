@@ -135,6 +135,7 @@ ${timeline}
   if (pastLife) {
     parts.push(`\n【转世设定】这是韩立的转世新局：他带着上一世残存的模糊记忆（上一世死于：${pastLife}）。开场及后续请用"似曾相识"的笔法暗示这份记忆（既视感、梦境、直觉），让玩家有机会避开上世的死因。不要直接点破"重生"二字，点到为止。`);
   }
+  parts.push(npcPromptBlock(state.npcs || INITIAL_NPCS));
   parts.push(`\n【当前世界状态】\n${JSON.stringify(state, null, 2)}`);
 
   return parts.join('\n');
@@ -459,6 +460,109 @@ function minDayFor(targetMilestone) {
   return m && typeof m.minDay === 'number' ? m.minDay : 0;
 }
 
+// ================= NPC 状态管理 =================
+// 引擎维护人物存亡状态（世界事实）：死亡由确定性规则检测，不依赖 AI 记忆
+const INITIAL_NPCS = {
+  '墨大夫（墨居仁）': { status: '存活', aliases: ['墨大夫', '墨居仁', '墨师'] },
+  '三叔': { status: '存活', aliases: ['韩三顺', '韩守德', '韩越'] },
+  '张铁': { status: '存活', aliases: [] },
+  '厉飞雨': { status: '存活', aliases: [] },
+  '掌教': { status: '存活', aliases: ['七玄门掌教'] },
+  '墨彩环': { status: '存活', aliases: [] },
+  '墨凤舞': { status: '存活', aliases: [] },
+  '南宫婉': { status: '存活', aliases: [] },
+  '元瑶': { status: '存活', aliases: [] },
+  '紫灵': { status: '存活', aliases: [] },
+};
+
+// 死亡检测：角色名（或别名）邻近出现死亡表达 → 标记死亡
+// 双向搜索：死亡词在角色名前（"毙命，墨居仁"）或后（"墨居仁……毙命"）都算
+// 排除否定/险象语境：没死、未死、不会死、差点死、险些死、几乎死
+function detectDeaths(ctx, npcs, day) {
+  const out = {};
+  const deathWords =
+    '死了|已死|身亡|毙命|陨落|没了气息|再无生息|再无声息|没了声息|咽气|命丧|死透了|当场死亡|没了性命';
+  for (const [name, info] of Object.entries(npcs || {})) {
+    if ((info.status || '存活') === '死亡') {
+      out[name] = info;
+      continue;
+    }
+    const aliases = [name, ...(info.aliases || [])];
+    let died = false;
+    for (const alias of aliases) {
+      if (died) break;
+      const re = new RegExp(
+        `(没|未|不|岂会|不会|差点|险些|几乎)?(?:${alias}.{0,10}?(?:${deathWords})|(?:${deathWords}).{0,10}?${alias})`,
+        'g'
+      );
+      let m;
+      while ((m = re.exec(ctx)) !== null) {
+        if (!m[1]) {
+          died = true;
+          break;
+        }
+      }
+      if (died) break;
+      // 主动杀死表达：杀死/击杀/斩杀/除掉 + 角色名
+      const re2 = new RegExp(`(?:杀死|击杀|斩杀|杀掉|除掉|了结)${alias}`, 'g');
+      if (re2.test(ctx)) {
+        died = true;
+        break;
+      }
+    }
+    out[name] = died ? { ...info, status: '死亡', diedAt: day } : info;
+  }
+  return out;
+}
+
+// 合并 AI 上报的新角色（只新增，不采信 AI 的状态变更——死亡只认引擎检测）
+function mergeReportedNpcs(npcs, reported) {
+  const out = { ...npcs };
+  if (!reported || typeof reported !== 'object') return out;
+  for (const [name, v] of Object.entries(reported)) {
+    const key = String(name).trim();
+    if (!key) continue;
+    if (out[key]) continue; // 已知角色不更新状态
+    if (typeof v === 'object' && v !== null) {
+      out[key] = { status: '存活', aliases: Array.isArray(v.aliases) ? v.aliases : [] };
+    } else {
+      out[key] = { status: '存活', aliases: [] };
+    }
+  }
+  return out;
+}
+
+// 已死亡角色"活人登场"检测：生成后校验，矛盾则自动重试
+// 排除提及语境：生前/已故/当年/回忆/遗物/墓碑（提及死者不算登场）
+function deadNpcAppearsAlive(ctx, npcs) {
+  const aliveAct = '(?:说道|笑道|冷声道|沉声道|喝道|问道|叹道|开口道|道：|道:|说|开口|站在|坐在|走来|起身|点头|摇头|拱手|转身|拂袖|端坐)';
+  for (const [name, info] of Object.entries(npcs || {})) {
+    if ((info.status || '存活') !== '死亡') continue;
+    for (const alias of [name, ...(info.aliases || [])]) {
+      const re = new RegExp(`(?:生前|已故|已死|亡故|当年|回忆|遗物|墓碑)?${alias}.{0,6}?(${aliveAct})`, 'g');
+      let m;
+      while ((m = re.exec(ctx)) !== null) {
+        if (!m[1]) return name;
+      }
+    }
+  }
+  return null;
+}
+
+// 人物状态 → 提示词段落
+function npcPromptBlock(npcs) {
+  const lines = ['【人物状态（世界事实，必须严格遵守）】'];
+  for (const [name, info] of Object.entries(npcs || {})) {
+    if ((info.status || '存活') === '死亡') {
+      lines.push(`- ${name}：已死亡（第 ${info.diedAt || '?'} 天${info.diedBy ? '，' + info.diedBy : ''}）。已死亡人物不得再以活人身份登场、说话或行动；提及必须明确其为已故之人。`);
+    } else {
+      lines.push(`- ${name}：存活`);
+    }
+  }
+  lines.push('- 若剧情中新发生死亡事件（任何人被杀死/身亡），必须在【状态】的 npcs 字段中如实登记。');
+  return lines.join('\n');
+}
+
 function parseNarration(text) {
   // 提取【状态】行（最后一个 { ... }）
   const stateMatch = text.match(/【状态】\s*(\{[\s\S]*\})/);
@@ -574,72 +678,95 @@ app.post('/api/chat', async (req, res) => {
     const systemPrompt = buildSystemPrompt({ state, summary, pastLife, mode });
     const messages = [{ role: 'system', content: systemPrompt }, ...history];
 
-    // 简略模式：两段式——缓冲生成完整叙述 → 句子边界精简（不截断）→ 流式下发精简文本 → 结构化补全选项/状态
-    // 详细模式：单段流式生成 + 解析
+    // ================= 生成与校验（最多 2 次尝试：已死亡角色复活时带警告重试） =================
     const isBrief = mode === 'brief';
-    let parsed;
-    let keywordText = ''; // 关键词锚定使用的完整叙述（简略模式用未裁剪的原文）
-    if (isBrief) {
-      const briefRaw = await callDeepSeekStream(messages, null, { maxTokens: 400, thinking: false });
-      keywordText = parseNarration(briefRaw).narrative;
-      const briefNarrative = smartTrim(keywordText);
-      for (let i = 0; i < briefNarrative.length; i += 24) {
-        res.write(JSON.stringify({ type: 'text', delta: briefNarrative.slice(i, i + 24) }) + '\n');
-      }
-      res.write(JSON.stringify({ type: 'parsing' }) + '\n');
-      parsed = await completeBriefFormat(briefNarrative, state);
-    } else {
-      const raw = await callDeepSeekStream(
-        messages,
-        (delta) => {
-          res.write(JSON.stringify({ type: 'text', delta }) + '\n');
-        },
-        { maxTokens: 2500, thinking: true }
-      );
-      res.write(JSON.stringify({ type: 'parsing' }) + '\n');
-      parsed = parseNarration(raw);
-      keywordText = parsed.narrative;
-    }
-
-    // 里程碑推进校验（确定性规则，无模型兜底）：
-    // 1. AI 上报的 milestone 编号 + beat 阶段词映射（取更靠后的一个）
-    const reportedMs = parsed.stateDiff.milestone;
-    const beat = String(parsed.stateDiff.beat || '').trim();
-    delete parsed.stateDiff.milestone;
-    delete parsed.stateDiff.beat;
-
-    // 剧情上下文（本轮叙述 + 最近历史），供关键词锚定使用
-    const ctx = milestoneContext(history, keywordText);
-
-    // 2. 状态交叉校验 + 自愈
-    // 回合结束后的状态：AI 上报的 diff + 叙述推断（AI 漏报地点/境界时补足）
-    const postState = Object.assign({}, state, parsed.stateDiff, inferStateFromNarrative(ctx));
-    const plausible = plausibleMilestone(postState);
-    let cur = clampMilestone(state.milestone);
+    let parsed = null;
+    let keywordText = '';
+    let day = Math.max(1, Number(state.day) || 1);
+    let npcs = null;
+    let prog = null;
     let corrected = false;
-    if (cur > plausible) {
-      cur = plausible; // 自愈：里程碑超出状态上限（如旧档虚报进度）则修正
-      corrected = true;
+    const retryWarnings = [];
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const msgs = retryWarnings.length ? [...messages, ...retryWarnings] : messages;
+
+      // ---- 生成 ----
+      if (isBrief) {
+        // 简略：缓冲生成完整叙述 → 句子边界精简（不截断）
+        const briefRaw = await callDeepSeekStream(msgs, null, { maxTokens: 400, thinking: false });
+        const briefFull = parseNarration(briefRaw).narrative;
+        const briefNarrative = smartTrim(briefFull);
+        keywordText = briefFull; // 校验用完整叙述（精简版可能截掉关键信息）
+        if (attempt === 0) {
+          for (let i = 0; i < briefNarrative.length; i += 24) {
+            res.write(JSON.stringify({ type: 'text', delta: briefNarrative.slice(i, i + 24) }) + '\n');
+          }
+          res.write(JSON.stringify({ type: 'parsing' }) + '\n');
+        }
+        parsed = await completeBriefFormat(briefNarrative, state);
+      } else {
+        // 详细：流式生成（第一次实时推送；重试时缓冲，由客户端重建替换）
+        const raw = await callDeepSeekStream(
+          msgs,
+          (delta) => {
+            if (attempt === 0) res.write(JSON.stringify({ type: 'text', delta }) + '\n');
+          },
+          { maxTokens: 2500, thinking: true }
+        );
+        if (attempt === 0) res.write(JSON.stringify({ type: 'parsing' }) + '\n');
+        parsed = parseNarration(raw);
+        keywordText = parsed.narrative;
+      }
+
+      // ---- 里程碑推进校验 ----
+      const reportedMs = parsed.stateDiff.milestone;
+      const beat = String(parsed.stateDiff.beat || '').trim();
+      delete parsed.stateDiff.milestone;
+      delete parsed.stateDiff.beat;
+      const ctx = milestoneContext(history, keywordText);
+      const postState = Object.assign({}, state, parsed.stateDiff, inferStateFromNarrative(ctx));
+      const plausible = plausibleMilestone(postState);
+      let cur = clampMilestone(state.milestone);
+      corrected = false;
+      if (cur > plausible) {
+        cur = plausible;
+        corrected = true;
+      }
+      const aiDesired = Math.max(Number(reportedMs) || 0, BEAT_MILESTONE[beat] || 0);
+      const target = aiDesired > cur ? Math.min(aiDesired, plausible) : (cur < plausible ? cur + 1 : cur);
+      const recentAll = [...(history || [])]
+        .slice(-6)
+        .map((t) => String(t.content || ''))
+        .join('\n');
+      const dayDelta = Math.max(extractDayDelta(recentAll + '\n' + keywordText), 1);
+      day = Math.max(1, (Number(state.day) || 1) + dayDelta);
+      const timeOk = day >= minDayFor(target);
+      const final = milestoneKeywordsOk(ctx, target) && timeOk ? target : cur;
+      prog = validateMilestone(cur, final);
+
+      // ---- NPC 状态 ----
+      const reportedNpcs = parsed.stateDiff.npcs;
+      delete parsed.stateDiff.npcs;
+      const npcsBase = mergeReportedNpcs(Object.assign({}, INITIAL_NPCS, state.npcs || {}), reportedNpcs);
+      const wideCtx =
+        [...(history || [])]
+          .slice(-10)
+          .map((t) => String(t.content || '').split('\n【选项】')[0])
+          .join('\n') +
+        '\n' +
+        keywordText;
+      npcs = detectDeaths(wideCtx, npcsBase, day);
+
+      // ---- 一致性校验：已死亡角色不得活人登场 ----
+      const conflictNpc = deadNpcAppearsAlive(keywordText, npcs);
+      if (!conflictNpc) break;
+      retryWarnings.push({
+        role: 'system',
+        content: `【一致性警告】上一版叙述中，已死亡人物「${conflictNpc}」以活人身份登场，与【人物状态】冲突。请重写本轮叙述：该人物已死亡，不得让其活人登场、说话或行动；若玩家要求与其互动，改写为合理剧情（调查遗物、回忆往事、询问他人），并保持本轮剧情正常进展。`,
+      });
+      console.warn(`[npc 矛盾] ${conflictNpc} 复活，重试第 ${attempt + 2} 次`);
     }
-
-    // 3. 关键词锚定（确定性）：推进目标必须被剧情上下文中的主线元素支撑
-    // - AI 报了推进信号 → 目标 = min(上报值, 状态上限)
-    // - AI 未报（如自由 beat）→ 试探 cur+1：上下文含下一节点触发词则自动推进
-    const aiDesired = Math.max(Number(reportedMs) || 0, BEAT_MILESTONE[beat] || 0);
-    const target = aiDesired > cur ? Math.min(aiDesired, plausible) : (cur < plausible ? cur + 1 : cur);
-
-    // 4. 时间线：每轮默认推进 1 天；从最近剧情上下文（玩家输入 + AI 叙述）提取时间跳跃
-    const recentAll = [...(history || [])]
-      .slice(-6)
-      .map((t) => String(t.content || ''))
-      .join('\n');
-    const dayDelta = Math.max(extractDayDelta(recentAll + '\n' + keywordText), 1);
-    const day = Math.max(1, (Number(state.day) || 1) + dayDelta);
-
-    // 5. 时间窗校验：目标节点未到最早天数不推进（防速通）
-    const timeOk = day >= minDayFor(target);
-    const final = milestoneKeywordsOk(ctx, target) && timeOk ? target : cur;
-    const prog = validateMilestone(cur, final);
 
     res.write(
       JSON.stringify({
@@ -649,6 +776,7 @@ app.post('/api/chat', async (req, res) => {
         options: parsed.options,
         stateDiff: parsed.stateDiff,
         day,
+        npcs,
         milestone: prog.milestone,
         milestoneAdvanced: prog.advanced,
         milestoneCorrected: corrected,

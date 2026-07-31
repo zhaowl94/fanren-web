@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>凡人修仙传 · AI说书人</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="title-block">
+    <h1>凡人修仙传</h1>
+    <span class="subtitle">人界篇 · AI 说书人</span>
+  </div>
+  <div class="slot-block">
+    <span class="slot-label">当前道途</span>
+    <span id="slotName">—</span>
+  </div>
+  <div class="actions">
+    <button id="btnSave" title="保存当前进度到本地存档">存档</button>
+    <button id="btnLoad" title="读取本地存档">读档</button>
+    <button id="btnExport" title="导出存档为 JSON 文件">导出</button>
+    <button id="btnImport" title="从 JSON 文件导入存档">导入</button>
+    <button id="btnNew" class="danger" title="开启一段新的修行">新游戏</button>
+    <button id="btnKey" title="配置 API（供应商/密钥/模型）">API密钥</button>
+  </div>
+  <input type="file" id="fileImport" accept=".json,application/json" hidden>
+</header>
+
+<main id="main">
+  <section id="narrative" aria-live="polite"></section>
+
+  <aside id="statePanel">
+    <div class="panel-title">◈ 修行状态 ◈</div>
+    <div class="stat"><span class="label">境界</span><span class="value" id="st-realm">—</span></div>
+    <div class="stat"><span class="label">寿元</span><span class="value" id="st-lifespan">—</span></div>
+    <div class="stat"><span class="label">灵石</span><span class="value" id="st-stones">—</span></div>
+    <div class="stat"><span class="label">地点</span><span class="value" id="st-location">—</span></div>
+    <div class="stat stat-milestone"><span class="label">剧情</span><span class="value" id="st-milestone">—</span></div>
+    <div class="stat stat-items">
+      <span class="label">随身物品</span>
+      <ul id="st-items"></ul>
+    </div>
+    <div class="panel-foot" id="st-tip">点击「新游戏」开始修行</div>
+  </aside>
+</main>
+
+<footer id="inputArea">
+  <div id="options"></div>
+  <div id="modeBar">
+    <span class="mode-label">回复模式</span>
+    <button id="modeBrief" class="mode-btn" title="每轮叙述 80~150 字，只交代关键事件">简略</button>
+    <button id="modeDetail" class="mode-btn active" title="每轮叙述 300~600 字，细节氛围丰满">详细</button>
+  </div>
+  <div id="inputBar">
+    <input id="userInput" type="text" placeholder="输入你的行动…（如：运功修炼 / 去坊市转转 / 祭出小绿瓶）" autocomplete="off">
+    <button id="btnSend">行动</button>
+  </div>
+  <div id="hint">也可点击上方选项 · 点击正文可跳过打字动画 · 每轮自动存档</div>
+</footer>
+
+<div id="deathOverlay" class="hidden">
+  <div class="death-box">
+    <div class="death-title">道 陨</div>
+    <p class="death-sub">这一世，就此终了</p>
+    <p id="deathReason" class="death-reason"></p>
+    <div class="death-actions">
+      <button id="btnReincarnate">转世重来</button>
+      <button id="btnNew2">重开新档</button>
+    </div>
+  </div>
+</div>
+
+<div id="loading" class="hidden">
+  <div class="loading-card">
+    <span class="dots"><i></i><i></i><i></i></span>
+    <p>说书人正在推演剧情……</p>
+  </div>
+</div>
+
+<div id="slotModal" class="hidden">
+  <div class="modal-box">
+    <div class="modal-title">读档</div>
+    <div id="slotList"></div>
+    <div class="modal-actions"><button id="btnModalClose">关闭</button></div>
+  </div>
+</div>
+
+<div id="configModal" class="hidden">
+  <div class="modal-box">
+    <div class="modal-title">API 配置</div>
+    <p class="config-hint">支持任意 OpenAI 兼容接口，默认 DeepSeek 供应商（ds v4 flash）。配置仅保存在本机（.env），由后端代理调用，前端与第三方均不接触密钥。</p>
+    <label class="config-label">Base URL</label>
+    <input id="cfgBaseUrl" type="text" placeholder="https://api.deepseek.com" autocomplete="off" spellcheck="false">
+    <label class="config-label">API Key</label>
+    <input id="keyInput" type="password" placeholder="sk- 开头的 API Key" autocomplete="off">
+    <label class="config-label">模型名称</label>
+    <input id="cfgModel" type="text" placeholder="deepseek-v4-flash" autocomplete="off" spellcheck="false">
+    <div id="keyStatus" class="key-status"></div>
+    <div class="modal-actions">
+      <button id="btnKeySave">保存并验证</button>
+      <button id="btnKeyClear">清除</button>
+      <button id="btnKeyClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

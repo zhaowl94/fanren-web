@@ -1,0 +1,509 @@
+/* ============ 凡人修仙传 · 古风排版 ============ */
+:root {
+  --paper: #f4ead2;
+  --paper-deep: #e7d9b8;
+  --ink: #2e2920;
+  --ink-soft: #6d6148;
+  --cinnabar: #a63a2e;
+  --gold: #b08d3e;
+  --line: #d6c69c;
+  --card: rgba(255, 251, 240, 0.82);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+
+body {
+  font-family: "STKaiti", "KaiTi", "楷体", "Noto Serif SC", "Songti SC", "SimSun", serif;
+  color: var(--ink);
+  background:
+    radial-gradient(ellipse at 20% 10%, rgba(176, 141, 62, 0.08), transparent 60%),
+    radial-gradient(ellipse at 85% 90%, rgba(166, 58, 46, 0.06), transparent 55%),
+    repeating-linear-gradient(0deg, rgba(110, 90, 50, 0.025) 0 2px, transparent 2px 4px),
+    linear-gradient(160deg, var(--paper) 0%, var(--paper-deep) 100%);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ============ 顶栏 ============ */
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 20px;
+  background: linear-gradient(180deg, rgba(46, 41, 32, 0.96), rgba(46, 41, 32, 0.88));
+  color: var(--paper);
+  border-bottom: 2px solid var(--gold);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.title-block h1 {
+  font-size: 24px;
+  letter-spacing: 0.35em;
+  color: var(--gold);
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.subtitle {
+  font-size: 12px;
+  color: #b8ab8d;
+  letter-spacing: 0.2em;
+  margin-left: 12px;
+}
+
+.slot-block { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.slot-label { color: #b8ab8d; }
+#slotName { color: var(--paper); letter-spacing: 0.05em; }
+
+.actions { margin-left: auto; display: flex; gap: 8px; }
+
+.actions button {
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  padding: 5px 14px;
+  color: var(--paper);
+  background: transparent;
+  border: 1px solid rgba(176, 141, 62, 0.6);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.actions button:hover { background: rgba(176, 141, 62, 0.25); border-color: var(--gold); }
+.actions button.danger:hover { background: rgba(166, 58, 46, 0.35); border-color: var(--cinnabar); }
+
+/* ============ 主体布局 ============ */
+#main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+#narrative {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 40px 60px;
+  line-height: 1.9;
+  font-size: 17px;
+  scroll-behavior: smooth;
+}
+
+/* 叙述段落 */
+.turn { margin-bottom: 22px; }
+
+/* 回合标签：区分玩家输入与说书人回复 */
+.turn-label {
+  display: block;
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  margin-bottom: 6px;
+}
+.label-user { color: var(--cinnabar); text-align: right; }
+.label-assistant { color: var(--gold); }
+
+/* 说书人回复：卡片式分块，与玩家输入明显区分 */
+.turn.assistant {
+  border-left: 3px solid var(--gold);
+  background: linear-gradient(90deg, rgba(176, 141, 62, 0.09), rgba(255, 251, 240, 0.3));
+  border-radius: 0 8px 8px 0;
+  padding: 12px 18px 10px;
+}
+.turn.assistant p { margin-bottom: 0.9em; text-indent: 2em; }
+.turn.assistant p.dialogue { color: #7c2f28; text-indent: 2em; }
+.turn.assistant p.thought { color: var(--ink-soft); font-style: italic; text-indent: 2em; }
+.turn.assistant p::first-letter { } /* 保留 */
+
+/* 玩家回合：右侧气泡 */
+.turn.user {
+  max-width: 70%;
+  margin-left: auto;
+  text-align: right;
+}
+.turn.user .text {
+  display: inline-block;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 8px 16px;
+  border-radius: 18px 18px 4px 18px;
+  font-size: 15px;
+  box-shadow: 0 2px 6px rgba(46, 41, 32, 0.25);
+  text-align: left;
+}
+
+/* 系统提示 */
+.turn.system { text-align: center; color: var(--ink-soft); font-size: 14px; font-style: italic; margin: 10px 0; }
+
+/* 里程碑达成横幅 */
+.turn-milestone {
+  text-align: center;
+  color: var(--cinnabar);
+  font-size: 14px;
+  letter-spacing: 0.18em;
+  margin: 20px 0;
+  padding: 9px 0;
+  border-top: 1px dashed var(--gold);
+  border-bottom: 1px dashed var(--gold);
+  background: linear-gradient(90deg, transparent, rgba(176, 141, 62, 0.12), transparent);
+}
+
+/* ============ 状态面板 ============ */
+#statePanel {
+  width: 250px;
+  flex-shrink: 0;
+  margin: 20px 20px 20px 0;
+  padding: 18px 16px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(80, 65, 35, 0.12);
+  align-self: flex-start;
+  position: sticky;
+  top: 20px;
+  overflow-y: auto;
+  max-height: calc(100vh - 120px);
+}
+
+.panel-title {
+  text-align: center;
+  color: var(--cinnabar);
+  letter-spacing: 0.3em;
+  font-size: 15px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+}
+
+.stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 7px 2px;
+  border-bottom: 1px dashed rgba(214, 198, 156, 0.6);
+  font-size: 14px;
+}
+.stat .label { color: var(--ink-soft); font-size: 13px; letter-spacing: 0.1em; }
+.stat .value { font-weight: 600; }
+.stat-items { display: block; }
+.stat-milestone .value { color: var(--cinnabar); font-size: 13px; text-align: right; }
+.stat-items ul { margin-top: 6px; padding-left: 18px; list-style: none; }
+.stat-items li { position: relative; font-size: 13px; padding: 2px 0; }
+.stat-items li::before { content: "◆"; position: absolute; left: -16px; color: var(--gold); font-size: 10px; top: 4px; }
+
+.panel-foot { margin-top: 12px; font-size: 12px; color: var(--ink-soft); text-align: center; line-height: 1.6; }
+
+/* ============ 底部输入区 ============ */
+#inputArea {
+  flex-shrink: 0;
+  padding: 12px 20px 14px;
+  background: linear-gradient(0deg, rgba(46, 41, 32, 0.97), rgba(46, 41, 32, 0.9));
+  border-top: 2px solid var(--gold);
+}
+
+#options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+
+/* 回复模式切换（简略/详细） */
+#modeBar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.mode-label { font-size: 12px; color: #8d8268; letter-spacing: 0.15em; }
+.mode-btn {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 3px 16px;
+  color: #b8ab8d;
+  background: transparent;
+  border: 1px solid rgba(176, 141, 62, 0.4);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.mode-btn:hover { border-color: var(--gold); color: var(--paper); }
+.mode-btn.active {
+  color: var(--ink);
+  background: rgba(176, 141, 62, 0.35);
+  border-color: var(--gold);
+  font-weight: 600;
+}
+
+.opt-btn {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 6px 14px;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px dashed var(--gold);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.opt-btn:hover { background: rgba(176, 141, 62, 0.2); transform: translateY(-1px); }
+
+#inputBar { display: flex; gap: 10px; }
+#userInput {
+  flex: 1;
+  font-family: inherit;
+  font-size: 15px;
+  padding: 10px 16px;
+  color: var(--paper);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(176, 141, 62, 0.5);
+  border-radius: 4px;
+  outline: none;
+}
+#userInput::placeholder { color: #8d8268; }
+#userInput:focus { border-color: var(--gold); }
+
+#btnSend {
+  font-family: inherit;
+  font-size: 15px;
+  letter-spacing: 0.2em;
+  padding: 10px 26px;
+  color: var(--paper);
+  background: var(--cinnabar);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+#btnSend:hover { background: #c2483a; }
+#btnSend:disabled, #userInput:disabled { opacity: 0.45; cursor: not-allowed; }
+
+#hint { margin-top: 8px; font-size: 12px; color: #8d8268; text-align: center; letter-spacing: 0.05em; }
+
+/* ============ 道陨界面 ============ */
+#deathOverlay {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center, #241310 0%, #0a0604 75%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fadeIn 1.2s ease;
+}
+#deathOverlay.hidden, #loading.hidden, #slotModal.hidden, #configModal.hidden { display: none; }
+
+.death-box { text-align: center; color: var(--paper); padding: 20px; max-width: 560px; }
+.death-title {
+  font-size: 88px;
+  color: #b3362a;
+  letter-spacing: 0.5em;
+  text-shadow: 0 0 40px rgba(179, 54, 42, 0.5);
+  margin-bottom: 10px;
+  animation: flicker 3s infinite;
+}
+.death-sub { color: #8d8268; letter-spacing: 0.4em; font-size: 14px; margin-bottom: 26px; }
+.death-reason {
+  color: #cbbfa5;
+  font-size: 15px;
+  line-height: 1.9;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(176, 141, 62, 0.3);
+  border-radius: 6px;
+  padding: 16px 20px;
+  margin-bottom: 30px;
+}
+.death-actions { display: flex; gap: 16px; justify-content: center; }
+.death-actions button {
+  font-family: inherit;
+  font-size: 16px;
+  letter-spacing: 0.2em;
+  padding: 12px 34px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+#btnReincarnate {
+  color: var(--paper);
+  background: transparent;
+  border: 1px solid var(--gold);
+}
+#btnReincarnate:hover { background: rgba(176, 141, 62, 0.25); }
+#btnNew2 {
+  color: var(--paper);
+  background: var(--cinnabar);
+  border: none;
+}
+#btnNew2:hover { background: #c2483a; }
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.4; }
+  94% { opacity: 1; }
+  97% { opacity: 0.7; }
+  98% { opacity: 1; }
+}
+
+/* ============ 加载动画 ============ */
+#loading {
+  position: fixed;
+  bottom: 96px;
+  right: 24px;
+  z-index: 90;
+}
+.loading-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 20px;
+  box-shadow: 0 6px 20px rgba(80, 65, 35, 0.25);
+  text-align: center;
+}
+.loading-card p { font-size: 13px; color: var(--ink-soft); letter-spacing: 0.1em; margin-top: 6px; }
+
+.dots { display: inline-flex; gap: 6px; }
+.dots i {
+  width: 8px; height: 8px;
+  background: var(--gold);
+  border-radius: 50%;
+  animation: bounce 1.2s infinite;
+}
+.dots i:nth-child(2) { animation-delay: 0.15s; }
+.dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-8px); opacity: 1; }
+}
+
+/* ============ 读档弹窗 ============ */
+#slotModal {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 8, 4, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 110;
+}
+.modal-box {
+  width: 460px;
+  max-width: 92vw;
+  max-height: 70vh;
+  background: var(--paper);
+  border: 1px solid var(--gold);
+  border-radius: 8px;
+  padding: 20px 24px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+}
+.modal-title {
+  text-align: center;
+  color: var(--cinnabar);
+  letter-spacing: 0.3em;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+  margin-bottom: 14px;
+}
+#slotList { overflow-y: auto; flex: 1; }
+.slot-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px;
+  border-bottom: 1px dashed var(--line);
+  font-size: 14px;
+}
+.slot-item .info { flex: 1; min-width: 0; }
+.slot-item .name { font-weight: 600; }
+.slot-item .meta { font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+.slot-item button {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.slot-item .load-btn {
+  color: var(--paper);
+  background: var(--ink);
+  border: none;
+}
+.slot-item .load-btn:hover { background: #4a4234; }
+.slot-item .del-btn {
+  color: var(--cinnabar);
+  background: transparent;
+  border: 1px solid var(--cinnabar);
+}
+.slot-item .del-btn:hover { background: rgba(166, 58, 46, 0.12); }
+.slot-empty { text-align: center; color: var(--ink-soft); padding: 24px 0; font-size: 14px; }
+.modal-actions { display: flex; gap: 10px; justify-content: center; margin-top: 12px; }
+.modal-actions button {
+  font-family: inherit;
+  padding: 6px 26px;
+  font-size: 13px;
+  letter-spacing: 0.15em;
+  cursor: pointer;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.modal-actions button:hover { background: rgba(176, 141, 62, 0.15); }
+
+/* ============ API 配置弹窗 ============ */
+#configModal {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 8, 4, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 110;
+}
+.config-hint { font-size: 12px; color: var(--ink-soft); line-height: 1.8; margin-bottom: 12px; }
+.config-label {
+  display: block;
+  font-size: 12px;
+  color: var(--ink-soft);
+  letter-spacing: 0.12em;
+  margin: 8px 0 4px;
+}
+#configModal input {
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 9px 12px;
+  color: var(--ink);
+  background: #fffdf5;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  outline: none;
+  box-sizing: border-box;
+}
+#configModal input:focus { border-color: var(--gold); }
+.key-status {
+  font-size: 13px;
+  color: var(--cinnabar);
+  min-height: 20px;
+  margin: 10px 0 4px;
+  text-align: center;
+  line-height: 1.6;
+}
+.key-status.ok { color: #4a7a3a; }
+
+/* ============ 响应式 ============ */
+@media (max-width: 900px) {
+  #main { flex-direction: column; }
+  #statePanel {
+    width: auto;
+    position: static;
+    max-height: none;
+    margin: 10px 14px 0;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0 16px;
+    order: 2;
+  }
+  .panel-title { grid-column: 1 / -1; }
+  .panel-foot { grid-column: 1 / -1; }
+  #narrative { order: 1; padding: 20px 18px 40px; font-size: 16px; }
+  #topbar { gap: 8px; }
+  .subtitle { display: none; }
+  .turn.user { max-width: 92%; }
+}

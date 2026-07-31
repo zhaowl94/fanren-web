@@ -1,0 +1,13 @@
+{
+  "name": "fanren-web",
+  "version": "0.1.0",
+  "description": "凡人修仙传 · AI 说书人 — 文字冒险游戏（人界篇）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}

@@ -252,10 +252,10 @@ async function revealBlock(paras, speed = 16) {
   }
 }
 
-// 选项按钮
+// 选项按钮（最多 3 个）
 function renderOptions(options) {
   el.options.innerHTML = '';
-  (options || []).forEach((o) => {
+  (options || []).slice(0, 3).forEach((o) => {
     const b = document.createElement('button');
     b.className = 'opt-btn';
     b.textContent = o;

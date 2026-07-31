@@ -135,7 +135,7 @@ ${timeline}
   if (pastLife) {
     parts.push(`\n【转世设定】这是韩立的转世新局：他带着上一世残存的模糊记忆（上一世死于：${pastLife}）。开场及后续请用"似曾相识"的笔法暗示这份记忆（既视感、梦境、直觉），让玩家有机会避开上世的死因。不要直接点破"重生"二字，点到为止。`);
   }
-  parts.push(npcPromptBlock(state.npcs || INITIAL_NPCS));
+  parts.push(npcPromptBlock(state.npcs || INITIAL_NPCS, curDay));
   parts.push(`\n【当前世界状态】\n${JSON.stringify(state, null, 2)}`);
 
   return parts.join('\n');
@@ -440,14 +440,18 @@ function inferStateFromNarrative(narrative) {
 // ================= 时间线系统 =================
 // 从文本中提取时间跳跃天数（玩家输入 / AI 叙述）；未提及时间返回 0
 const CN_NUM = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+// 中文数字 → 数值：支持十/百/千复合（二十、一百二十、两百、三千、百年）
 function cnNum(s) {
   if (!s) return 0;
-  if (/^十/.test(s)) return 10 + (CN_NUM[s[1]] || 0);
-  if (s.includes('十')) {
-    const [a, b] = s.split('十');
-    return (CN_NUM[a] || 1) * 10 + (CN_NUM[b] || 0);
+  let total = 0;
+  let num = 0;
+  for (const ch of String(s)) {
+    if (ch === '千') { total += (num || 1) * 1000; num = 0; }
+    else if (ch === '百') { total += (num || 1) * 100; num = 0; }
+    else if (ch === '十') { total += (num || 1) * 10; num = 0; }
+    else num = CN_NUM[ch] || 0;
   }
-  return CN_NUM[s] || 1;
+  return total + num;
 }
 
 function extractDayDelta(text) {
@@ -458,11 +462,11 @@ function extractDayDelta(text) {
   if (m) return Number(m[1]) * 30;
   m = t.match(/(\d+)\s*年/);
   if (m) return Number(m[1]) * 365;
-  m = t.match(/([一二两三四五六七八九十]+)\s*(?:天|日)/);
+  m = t.match(/([一二两三四五六七八九十百千]+)\s*(?:天|日)/);
   if (m) return Math.max(1, cnNum(m[1]));
-  m = t.match(/([一二两三四五六七八九十]+)\s*(?:个)?月/);
+  m = t.match(/([一二两三四五六七八九十百千]+)\s*(?:个)?月/);
   if (m) return cnNum(m[1]) * 30;
-  m = t.match(/([一二两三四五六七八九十]+)\s*年/);
+  m = t.match(/([一二两三四五六七八九十百千]+)\s*年/);
   if (m) return cnNum(m[1]) * 365;
   if (/半年/.test(t)) return 180;
   if (/半月/.test(t)) return 15;
@@ -483,20 +487,45 @@ function minDayFor(targetMilestone) {
 
 // ================= NPC 状态管理 =================
 // 引擎维护人物存亡状态（世界事实）：死亡由确定性规则检测，不依赖 AI 记忆
+// 人物随岁月老去：年龄 = 起始年龄 + 流逝年数；寿元将尽者自动坐化
 const INITIAL_NPCS = {
-  '墨大夫（墨居仁）': { status: '存活', aliases: ['墨大夫', '墨居仁', '墨师'] },
-  '三叔': { status: '存活', aliases: ['韩三顺', '韩守德', '韩越'] },
-  '张铁': { status: '存活', aliases: [] },
-  '厉飞雨': { status: '存活', aliases: [] },
-  '掌教': { status: '存活', aliases: ['七玄门掌教'] },
-  '墨彩环': { status: '存活', aliases: [] },
-  '墨凤舞': { status: '存活', aliases: [] },
-  '南宫婉': { status: '存活', aliases: [] },
-  '元瑶': { status: '存活', aliases: [] },
-  '紫灵': { status: '存活', aliases: [] },
+  '墨大夫（墨居仁）': { status: '存活', ageAtStart: 55, realm: '炼气', aliases: ['墨大夫', '墨居仁', '墨师'] },
+  '三叔': { status: '存活', ageAtStart: 42, realm: '凡人', aliases: ['韩三顺', '韩守德', '韩越'] },
+  '张铁': { status: '存活', ageAtStart: 16, realm: '凡人', aliases: [] },
+  '厉飞雨': { status: '存活', ageAtStart: 17, realm: '凡人', aliases: [] },
+  '掌教': { status: '存活', ageAtStart: 60, realm: '凡人', aliases: ['七玄门掌教'] },
+  '墨彩环': { status: '存活', ageAtStart: 15, realm: '凡人', aliases: [] },
+  '墨凤舞': { status: '存活', ageAtStart: 17, realm: '凡人', aliases: [] },
+  '南宫婉': { status: '存活', ageAtStart: 80, realm: '筑基', aliases: [] },
+  '元瑶': { status: '存活', ageAtStart: 200, realm: '元婴', aliases: [] },
+  '紫灵': { status: '存活', ageAtStart: 400, realm: '化神', aliases: [] },
 };
 
-// 死亡检测：角色名（或别名）邻近出现死亡表达 → 标记死亡
+// 境界 → 寿元上限（岁）
+const REALM_LIFESPAN = [
+  [/化神/, 2000],
+  [/元婴/, 1000],
+  [/结丹/, 500],
+  [/筑基/, 200],
+  [/炼气/, 120],
+];
+const MORTAL_LIFESPAN = 90;
+
+function lifespanOf(realm) {
+  const r = String(realm || '');
+  for (const [re, y] of REALM_LIFESPAN) {
+    if (re.test(r)) return y;
+  }
+  return MORTAL_LIFESPAN;
+}
+
+// NPC 当前年龄：起始年龄 + 流逝年数（day 从第 1 天起，韩立 15 岁）
+function npcAge(info, day) {
+  const start = typeof info.ageAtStart === 'number' ? info.ageAtStart : 40;
+  return start + Math.floor(Math.max(0, day - 1) / 365);
+}
+
+// 死亡检测：被杀（叙述关键词）+ 坐化（年龄超寿元）
 // 双向搜索：死亡词在角色名前（"毙命，墨居仁"）或后（"墨居仁……毙命"）都算
 // 排除否定/险象语境：没死、未死、不会死、差点死、险些死、几乎死
 function detectDeaths(ctx, npcs, day) {
@@ -531,26 +560,66 @@ function detectDeaths(ctx, npcs, day) {
         break;
       }
     }
-    out[name] = died ? { ...info, status: '死亡', diedAt: day } : info;
+    if (died) {
+      out[name] = { ...info, status: '死亡', diedAt: day, diedBy: '被杀' };
+      continue;
+    }
+    // 坐化：年龄超过境界寿元 → 自然死亡
+    const age = npcAge(info, day);
+    if (age > lifespanOf(info.realm)) {
+      out[name] = { ...info, status: '死亡', diedAt: day, diedBy: '坐化' };
+      continue;
+    }
+    out[name] = info;
   }
   return out;
 }
 
-// 合并 AI 上报的新角色（只新增，不采信 AI 的状态变更——死亡只认引擎检测）
+// 合并 AI 上报的人物信息：新增角色登记；已知角色只接受境界成长（realm）
+// 生死状态只认引擎检测，年龄由引擎按时间线计算
 function mergeReportedNpcs(npcs, reported) {
   const out = { ...npcs };
   if (!reported || typeof reported !== 'object') return out;
   for (const [name, v] of Object.entries(reported)) {
     const key = String(name).trim();
     if (!key) continue;
-    if (out[key]) continue; // 已知角色不更新状态
+    if (out[key]) {
+      if (typeof v === 'object' && v !== null && typeof v.realm === 'string' && v.realm) {
+        out[key] = { ...out[key], realm: v.realm };
+      }
+      continue;
+    }
     if (typeof v === 'object' && v !== null) {
-      out[key] = { status: '存活', aliases: Array.isArray(v.aliases) ? v.aliases : [] };
+      out[key] = {
+        status: '存活',
+        ageAtStart: typeof v.age === 'number' ? v.age : 40,
+        realm: typeof v.realm === 'string' && v.realm ? v.realm : '凡人',
+        aliases: Array.isArray(v.aliases) ? v.aliases : [],
+      };
     } else {
-      out[key] = { status: '存活', aliases: [] };
+      out[key] = { status: '存活', ageAtStart: 40, realm: '凡人', aliases: [] };
     }
   }
   return out;
+}
+
+// 人物状态 → 提示词段落
+function npcPromptBlock(npcs, day) {
+  const lines = ['【人物状态（世界事实，必须严格遵守）】'];
+  for (const [name, info] of Object.entries(npcs || {})) {
+    if ((info.status || '存活') === '死亡') {
+      lines.push(`- ${name}：已死亡（第 ${info.diedAt || '?'} 天，${info.diedBy || '被杀'}）。已死亡人物不得再以活人身份登场、说话或行动；提及必须明确其为已故之人。`);
+    } else {
+      const age = npcAge(info, day);
+      const realm = info.realm || '凡人';
+      lines.push(`- ${name}：存活，${age} 岁，${realm}期（寿元约 ${lifespanOf(realm)} 岁）`);
+    }
+  }
+  lines.push(
+    '- 岁月规则：人物随岁月老去，寿元将尽者会坐化（自然死亡）。叙述时间跳跃时须考虑人物年龄与寿元变化，年迈的凡人长辈可能在岁月中离世。'
+  );
+  lines.push('- 若剧情中新发生死亡事件（任何人被杀死/身亡/坐化），必须在【状态】的 npcs 字段中如实登记。');
+  return lines.join('\n');
 }
 
 // 已死亡角色"活人登场"检测：生成后校验，矛盾则自动重试
@@ -568,20 +637,6 @@ function deadNpcAppearsAlive(ctx, npcs) {
     }
   }
   return null;
-}
-
-// 人物状态 → 提示词段落
-function npcPromptBlock(npcs) {
-  const lines = ['【人物状态（世界事实，必须严格遵守）】'];
-  for (const [name, info] of Object.entries(npcs || {})) {
-    if ((info.status || '存活') === '死亡') {
-      lines.push(`- ${name}：已死亡（第 ${info.diedAt || '?'} 天${info.diedBy ? '，' + info.diedBy : ''}）。已死亡人物不得再以活人身份登场、说话或行动；提及必须明确其为已故之人。`);
-    } else {
-      lines.push(`- ${name}：存活`);
-    }
-  }
-  lines.push('- 若剧情中新发生死亡事件（任何人被杀死/身亡），必须在【状态】的 npcs 字段中如实登记。');
-  return lines.join('\n');
 }
 
 function parseNarration(text) {

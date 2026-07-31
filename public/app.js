@@ -176,7 +176,7 @@ function renderStatePanel() {
     el.stItems.appendChild(li);
   });
 
-  // 人物存亡：死亡标记 ✝（含死亡天数）
+  // 人物存亡：存活显示年龄/境界，死亡标记 ✝（天数+死因）
   el.stNpcs.innerHTML = '';
   const npcs = s.npcs || {};
   const names = Object.keys(npcs);
@@ -191,9 +191,12 @@ function renderStatePanel() {
       const li = document.createElement('li');
       if ((info.status || '存活') === '死亡') {
         li.className = 'npc-dead';
-        li.textContent = `✝ ${name}（第 ${info.diedAt ?? '?'} 天）`;
+        li.textContent = `✝ ${name}（第 ${info.diedAt ?? '?'} 天·${info.diedBy || '被杀'}）`;
       } else {
-        li.textContent = name;
+        const ageStart = typeof info.ageAtStart === 'number' ? info.ageAtStart : 40;
+        const age = ageStart + Math.floor(Math.max(0, day - 1) / 365);
+        const realm = info.realm || '凡人';
+        li.textContent = `${name}（${age}岁·${realm}）`;
       }
       el.stNpcs.appendChild(li);
     });

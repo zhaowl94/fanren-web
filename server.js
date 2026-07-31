@@ -61,9 +61,12 @@ function persistEnv({ baseUrl, apiKey, model }) {
 
 // ================= 系统提示词 =================
 // 回复模式：详细（默认）丰满叙述；简略只交代关键事件，但剧情推进规则不变
+// 模式指令为最高优先级，覆盖基础长度规则
 const REPLY_MODES = {
-  detailed: '【本轮回复模式：详细】叙述 300~600 字，细节、氛围、心理描写尽量丰满。',
-  brief: '【本轮回复模式：简略】叙述 80~150 字，只交代本回合的关键事件、转折与要点，节奏紧凑；剧情推进、状态变化、选项与 milestone/beat 规则一律照常，不得因简略而跳过应有的剧情进展。',
+  detailed:
+    '【回复模式：详细（最高优先级，覆盖其他一切长度要求）】本轮叙述 300~600 字，细节、氛围、心理描写尽量丰满，切勿过短。',
+  brief:
+    '【回复模式：简略（最高优先级，覆盖其他一切长度要求）】本轮叙述控制在 100~160 字，务必将本回合的关键事件与转折讲完整并自然收尾，不要写到一半被截断；不铺陈环境细节，不做多余心理描写，对话从简；即使此前回合的回复较长，本轮也必须从简。剧情推进、状态变化、选项与 milestone/beat 规则一律照常，不得因简略而跳过应有的剧情进展。',
 };
 
 function buildSystemPrompt({ state, summary, pastLife, mode = 'detailed' }) {
@@ -96,11 +99,12 @@ function buildSystemPrompt({ state, summary, pastLife, mode = 'detailed' }) {
 ${timeline}
 
 【叙述要求】
+- 回复长度以"回复模式"指令为准（见下），该指令优先级最高，基础规则不与之冲突。
 - 用第三人称讲述韩立的经历，风格参考凡人修仙传原著：古风白话、细节丰富、氛围感强、张弛有度。
-- 每轮叙述 200~500 字，用空行分段。玩家的输入可以是行动、对话或选择，你要合理回应并推进剧情。
+- ${REPLY_MODES[mode] || REPLY_MODES.detailed}
+- 用空行分段。玩家的输入可以是行动、对话或选择，你要合理回应并推进剧情。
 - 把握韩立的性格：谨慎、算计、藏拙；他绝不高调、绝不轻易暴露秘密。
 - 修炼、突破、战斗的描写要有"凡人流"的味道：资源、寿元、风险的权衡。
-- ${REPLY_MODES[mode] || REPLY_MODES.detailed}
 - 严禁在叙述正文中出现任何元信息、注记或写作说明（如"此处出自原著""请保持设定"之类），一切附加说明只允许出现在【选项】或【状态】区。
 - 玩家说"故事开始"时，从韩立随三叔来到七玄门、等待明日入门测试的场景开讲。
 
@@ -131,55 +135,99 @@ ${timeline}
   return parts.join('\n');
 }
 
-// ================= 调用 DeepSeek =================
-async function callDeepSeek(messages, { temperature = 1.0, maxTokens = 2500 } = {}) {
-  // 偶发空内容：重试一次（v4-flash 偶有只出推理 token、正文为空的情况）
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const resp = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages,
-        temperature,
-        max_tokens: maxTokens,
-        stream: false,
-      }),
-    });
+// 非流式调用 DeepSeek（summarize / beat 提取 / 简略结构化补全）
+async function callDeepSeek(messages, { temperature = 1.0, maxTokens = 2500, thinking = true } = {}) {
+  const body = {
+    model: MODEL,
+    messages,
+    temperature,
+    max_tokens: maxTokens,
+    stream: false,
+  };
+  if (thinking === false) body.thinking = { type: 'disabled' };
+  const resp = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
 
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => '');
-      throw new Error(`DeepSeek API ${resp.status}: ${body.slice(0, 300)}`);
-    }
-    const data = await resp.json();
-    const content = data.choices?.[0]?.message?.content ?? '';
-    if (content.trim()) return content;
-    console.warn(`[DeepSeek 返回空内容，第 ${attempt} 次后重试]`);
-    await new Promise((r) => setTimeout(r, 800));
+  if (!resp.ok) {
+    const bodyText = await resp.text().catch(() => '');
+    throw new Error(`DeepSeek API ${resp.status}: ${bodyText.slice(0, 300)}`);
   }
-  return '';
+  const data = await resp.json();
+  const content = data.choices?.[0]?.message?.content ?? '';
+  if (content.trim()) return content;
+  console.warn('[DeepSeek 返回空内容，重试一次]');
+  // 偶发空内容：重试一次
+  const retryBody = { ...body, thinking: thinking === false ? { type: 'disabled' } : undefined };
+  if (retryBody.thinking === undefined) delete retryBody.thinking;
+  const resp2 = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY}` },
+    body: JSON.stringify(retryBody),
+  });
+  const data2 = await resp2.json().catch(() => ({}));
+  return data2.choices?.[0]?.message?.content ?? '';
+}
+
+// 简略模式两段式补全：由短叙述生成完整【选项】+【状态】（含 beat）
+async function completeBriefFormat(raw, state) {
+  const parsed = parseNarration(raw);
+  const narrative = parsed.narrative || '';
+  try {
+    const structPrompt = [
+      '你是《凡人修仙传》互动小说的剧情结构化器。请根据以下本轮剧情叙述与当前世界状态，只输出两部分，不要输出任何叙述文字：',
+      '1. 【选项】3~5 个玩家下一步可做的建议选项，每行一个，以 "- " 开头。',
+      '2. 【状态】后跟一个 JSON 对象，只包含【有变化】的字段，字段名固定为：{"realm":"境界","lifespan":寿元数字,"spiritStones":灵石数字,"location":"地点","items":["完整物品列表"],"dead":false,"deathReason":"死亡原因","milestone":下一里程碑编号,"beat":"阶段词"}。',
+      '- beat 必填：从以下词中选最贴近当前剧情阶段的：入门测试、杂役、收徒、起疑、识破、了结、离开、入谷、禁地、筑基、出海、结丹、回天南、大晋、元婴、化神、飞升。',
+      '- 若剧情中韩立死亡，dead 必须为 true 并写明 deathReason。',
+      '- 若当前里程碑的关键事件已完成，milestone 输出下一个编号（一次一个）。',
+      `【当前世界状态】\n${JSON.stringify(state)}`,
+      `【本轮剧情叙述】\n${narrative}`,
+    ].join('\n');
+    const structRaw = await callDeepSeek(
+      [
+        { role: 'system', content: '你只输出【选项】与【状态】两段，严格遵守格式，不输出其他任何内容。' },
+        { role: 'user', content: structPrompt },
+      ],
+      { temperature: 0.4, maxTokens: 400, thinking: false }
+    );
+    const struct = parseNarration(structRaw);
+    return {
+      narrative,
+      options: Array.isArray(struct.options) && struct.options.length ? struct.options : parsed.options,
+      stateDiff: Object.keys(struct.stateDiff).length ? struct.stateDiff : parsed.stateDiff,
+    };
+  } catch (e) {
+    console.warn('[简略结构化补全失败，回退单段解析]', e.message);
+    return parsed;
+  }
 }
 
 // 流式调用 DeepSeek：逐块回调增量文本（onDelta），返回完整内容
-async function callDeepSeekStream(messages, onDelta, { temperature = 1.0, maxTokens = 2500 } = {}) {
+// thinking=false 时关闭推理（简略模式：更快、max_tokens 成为硬性长度上限）
+async function callDeepSeekStream(messages, onDelta, { temperature = 1.0, maxTokens = 2500, thinking = true } = {}) {
   let lastContent = '';
   for (let attempt = 1; attempt <= 2; attempt++) {
+    const body = {
+      model: MODEL,
+      messages,
+      temperature,
+      max_tokens: maxTokens,
+      stream: true,
+    };
+    if (thinking === false) body.thinking = { type: 'disabled' };
     const resp = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${API_KEY}`,
       },
-      body: JSON.stringify({
-        model: MODEL,
-        messages,
-        temperature,
-        max_tokens: maxTokens,
-        stream: true,
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!resp.ok) {
@@ -370,13 +418,31 @@ app.post('/api/chat', async (req, res) => {
     const systemPrompt = buildSystemPrompt({ state, summary, pastLife, mode });
     const messages = [{ role: 'system', content: systemPrompt }, ...history];
 
-    // 流式转发 AI 增量文本，浏览器实时渲染
-    const raw = await callDeepSeekStream(messages, (delta) => {
-      res.write(JSON.stringify({ type: 'text', delta }) + '\n');
-    });
-
-    res.write(JSON.stringify({ type: 'parsing' }) + '\n');
-    const parsed = parseNarration(raw);
+    // 简略模式：两段式——流式生成短叙述（max_tokens 硬顶，引擎强制从简）→ 结构化补全选项/状态
+    // 详细模式：单段流式生成 + 解析
+    const isBrief = mode === 'brief';
+    let parsed;
+    if (isBrief) {
+      const briefRaw = await callDeepSeekStream(
+        messages,
+        (delta) => {
+          res.write(JSON.stringify({ type: 'text', delta }) + '\n');
+        },
+        { maxTokens: 140, thinking: false } // 叙述硬顶 ~170 字（实测中文约 0.75 token/字），选项/状态由第二段补全
+      );
+      res.write(JSON.stringify({ type: 'parsing' }) + '\n');
+      parsed = await completeBriefFormat(briefRaw, state);
+    } else {
+      const raw = await callDeepSeekStream(
+        messages,
+        (delta) => {
+          res.write(JSON.stringify({ type: 'text', delta }) + '\n');
+        },
+        { maxTokens: 2500, thinking: true }
+      );
+      res.write(JSON.stringify({ type: 'parsing' }) + '\n');
+      parsed = parseNarration(raw);
+    }
 
     // 里程碑推进校验：引擎把关顺序，AI 不得跳跃/回退
     // 双信号：AI 上报的 milestone 编号 + beat 阶段词映射（取更靠后的一个）

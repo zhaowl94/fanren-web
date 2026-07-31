@@ -103,11 +103,12 @@ let game = {
   busy: false,
 };
 
-// 回复模式：detailed（默认）| brief（每轮可切换，粘性保持）
-let replyMode = 'detailed';
+// 回复模式：detailed（默认）| brief（每轮可切换，粘性保持 + localStorage 持久化）
+let replyMode = localStorage.getItem('fanren.replyMode') === 'brief' ? 'brief' : 'detailed';
 
 function setReplyMode(mode) {
   replyMode = mode === 'brief' ? 'brief' : 'detailed';
+  localStorage.setItem('fanren.replyMode', replyMode);
   el.modeBrief.classList.toggle('active', replyMode === 'brief');
   el.modeDetail.classList.toggle('active', replyMode === 'detailed');
 }
@@ -319,8 +320,8 @@ async function sendTurn(userText, opts = {}) {
     summarizeAsync(dropped);
   }
 
-    el.stTip.textContent = '说书人推演中……';
-    el.loading.classList.remove('hidden');
+  el.stTip.textContent = replyMode === 'brief' ? '简略模式推演中……' : '详细模式推演中……';
+  el.loading.classList.remove('hidden');
     try {
       const resp = await fetch('/api/chat', {
         method: 'POST',
@@ -725,7 +726,7 @@ function onStreamText(delta) {
   if (!stream.firstText) {
     stream.firstText = true;
     el.loading.classList.add('hidden');
-    el.stTip.textContent = '说书人正在书写……';
+    el.stTip.textContent = replyMode === 'brief' ? '说书人正在书写（简略）……' : '说书人正在书写（详细）……';
   }
   stream.raw += delta;
   const iOpt = stream.raw.indexOf('【选项】');
@@ -879,6 +880,7 @@ function bindEvents() {
 
 function init() {
   bindEvents();
+  setReplyMode(replyMode); // 恢复持久化的回复模式
   renderStatePanel();
   loadMilestones();
   checkKeyStatus();

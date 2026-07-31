@@ -341,23 +341,44 @@ const REALM_CAPS = [
   [/元婴/, 13],
   [/化神/, 14],
 ];
+
+// 境界证据：该境界明确证明已完成的节点（用于追赶——玩家跳过主线过程时直接对齐）
+const REALM_EVIDENCE = [
+  [/化神/, 13],
+  [/元婴|结婴/, 12],
+  [/结丹|金丹/, 9],
+  [/筑基/, 7],
+  [/炼气/, 2],
+];
+function realmEvidence(realm) {
+  const r = String(realm || '');
+  for (const [re, m] of REALM_EVIDENCE) {
+    if (re.test(r)) return m;
+  }
+  return 1;
+}
+
+// 状态交叉校验：地点/境界决定里程碑的物理上限（防 AI 虚报进度）
+// 地点与境界上限取较大值：境界是更强的完成度证据，允许自由剧情偏离原著地点
+// （如玩家在黄枫谷结丹——AI 的自由发挥不被原著地理卡死）
 function plausibleMilestone(state) {
   const loc = String(state.location || '');
   const realm = String(state.realm || '');
-  let cap = MILESTONES.length;
+  let locCap = MILESTONES.length;
   for (const [re, c] of LOCATION_CAPS) {
     if (re.test(loc)) {
-      cap = Math.min(cap, c);
+      locCap = c;
       break;
     }
   }
+  let realmCap = MILESTONES.length;
   for (const [re, c] of REALM_CAPS) {
     if (re.test(realm)) {
-      cap = Math.min(cap, c);
+      realmCap = c;
       break;
     }
   }
-  return cap;
+  return Math.max(locCap, realmCap);
 }
 
 // 叙述关键词锚定：推进到目标里程碑要求剧情文本包含其全部触发词（防自创支线冒充主线节点）
@@ -730,7 +751,14 @@ app.post('/api/chat', async (req, res) => {
       let cur = clampMilestone(state.milestone);
       corrected = false;
       if (cur > plausible) {
-        cur = plausible;
+        cur = plausible; // 自愈：里程碑超出状态上限（如旧档虚报进度）则修正
+        corrected = true;
+      }
+      // 状态追赶：境界证据明确时，里程碑直接对齐到对应节点
+      // （玩家跳过主线过程直接修炼到高境界——不被被略过的节点卡死）
+      const evidence = realmEvidence(postState.realm || '');
+      if (evidence > cur && evidence <= plausible) {
+        cur = evidence;
         corrected = true;
       }
       const aiDesired = Math.max(Number(reportedMs) || 0, BEAT_MILESTONE[beat] || 0);

@@ -231,12 +231,14 @@ function appendMilestoneBanner(idx) {
 
 // 打字机式揭示：段落依次出现，当前段逐字打出，后续段落保持隐藏
 // token 机制：新的一轮揭示开始后，旧揭示立即终止（打字途中点选项不会并发打架）
+// speed <= 0 时直接完整显示（流式重建等场景）
 let skipReveal = false;
 let revealToken = 0;
 async function revealBlock(paras, speed = 16) {
   const token = ++revealToken;
   skipReveal = false;
   for (const { el: p, text: final } of paras) {
+    if (speed <= 0) { p.textContent = final; continue; }
     if (token !== revealToken || skipReveal) { p.textContent = final; continue; }
     p.textContent = '';
     for (let i = 0; i < final.length; i += 2) {
@@ -317,29 +319,37 @@ async function sendTurn(userText, opts = {}) {
     summarizeAsync(dropped);
   }
 
-  el.stTip.textContent = '说书人推演中……';
-  el.loading.classList.remove('hidden');
-  try {
-    const resp = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        history: game.history,
-        state: game.state,
-        summary: game.summary,
-        pastLife: game.pastLife,
-        mode: replyMode,
-      }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || data.ok === false) throw new Error(data.error || `服务器错误（${resp.status}）`);
-    applyAssistant(data);
-  } catch (err) {
-    // 移除未得到回复的玩家回合，允许重试
-    game.history.pop();
-    game.turnCount--;
-    appendSystem(`⚠️ 传讯失败：${err.message}。请重试。`);
-  } finally {
+    el.stTip.textContent = '说书人推演中……';
+    el.loading.classList.remove('hidden');
+    try {
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          history: game.history,
+          state: game.state,
+          summary: game.summary,
+          pastLife: game.pastLife,
+          mode: replyMode,
+        }),
+      });
+      const ct = resp.headers.get('content-type') || '';
+      if (ct.includes('ndjson') || ct.includes('stream')) {
+        await handleStreamResponse(resp); // 流式：文字实时浮现
+      } else {
+        // 兜底：非流式 JSON 响应
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.ok === false) throw new Error(data.error || `服务器错误（${resp.status}）`);
+        applyAssistant(data);
+      }
+    } catch (err) {
+      // 移除未得到回复的玩家回合，允许重试
+      if (stream && stream.block) stream.block.remove();
+      stream = null;
+      game.history.pop();
+      game.turnCount--;
+      appendSystem(`⚠️ 传讯失败：${err.message}。请重试。`);
+    } finally {
     game.busy = false;
     el.input.disabled = game.state.alive === false;
     el.btnSend.disabled = game.state.alive === false;
@@ -669,6 +679,138 @@ async function clearConfig() {
     el.keyStatus.textContent = '❌ ' + e.message;
     el.keyStatus.className = 'key-status';
   }
+}
+
+// ================= 流式回复处理 =================
+// 后端以 NDJSON 逐行推送：{type:'text',delta} → {type:'parsing'} → {type:'done',...} / {type:'error'}
+let stream = null;
+
+async function handleStreamResponse(resp) {
+  stream = { block: null, pending: '', raw: '', shownLen: 0, firstText: false };
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let doneMsg = null;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let msg;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (msg.type === 'text') onStreamText(msg.delta || '');
+        else if (msg.type === 'parsing') el.stTip.textContent = '正在整理状态与选项……';
+        else if (msg.type === 'done') doneMsg = msg;
+        else if (msg.type === 'error') throw new Error(msg.error || '服务器错误');
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!doneMsg) throw new Error('流式响应中断');
+  applyStreamDone(doneMsg);
+}
+
+// 流式增量：只显示【选项】/【状态】标记之前的叙述部分
+function onStreamText(delta) {
+  if (!stream.firstText) {
+    stream.firstText = true;
+    el.loading.classList.add('hidden');
+    el.stTip.textContent = '说书人正在书写……';
+  }
+  stream.raw += delta;
+  const iOpt = stream.raw.indexOf('【选项】');
+  const iSt = stream.raw.indexOf('【状态】');
+  const cut = Math.min(iOpt < 0 ? Infinity : iOpt, iSt < 0 ? Infinity : iSt);
+  const display = stream.raw.slice(0, cut);
+  const newPart = display.slice(stream.shownLen);
+  stream.shownLen = display.length;
+  if (newPart) appendStreamedText(newPart);
+}
+
+// 流式文字按空行分段，逐段落渲染（实时浮现）
+function appendStreamedText(text) {
+  if (!stream.block) {
+    stream.block = document.createElement('div');
+    stream.block.className = 'turn turn-assistant';
+    const label = document.createElement('span');
+    label.className = 'turn-label label-assistant';
+    label.textContent = '📖 说书人';
+    stream.block.appendChild(label);
+    el.narrative.appendChild(stream.block);
+  }
+  stream.pending += text;
+  const parts = stream.pending.split(/\n\s*\n/);
+  stream.pending = parts.pop(); // 最后一段可能不完整，留待下一块
+  for (const part of parts) {
+    const t = part.trim();
+    if (t) addStreamPara(t);
+  }
+  scrollToBottom();
+}
+
+function addStreamPara(t) {
+  const p = document.createElement('p');
+  if (/^「/.test(t)) p.className = 'dialogue';
+  else if (/^[（(*]/.test(t)) p.className = 'thought';
+  p.textContent = t;
+  stream.block.appendChild(p);
+}
+
+// 流结束：冲刷残余段落、解析选项/状态/里程碑、重建校验
+function applyStreamDone(msg) {
+  const tail = (stream.pending || '').trim();
+  if (tail) addStreamPara(tail);
+
+  const narrative = (msg.narrative || '').trim() || '（说书人沉默了片刻……）';
+  const parasText = stream.block
+    ? Array.from(stream.block.querySelectorAll('p'))
+        .map((p) => p.textContent)
+        .join('\n\n')
+        .trim()
+    : '';
+  const normalized = narrative
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+
+  // 极端情况（如流式渲染与解析结果不一致）：以解析结果重建
+  if (parasText !== normalized) {
+    if (stream.block) stream.block.remove();
+    const { paras } = appendTurnBlock('assistant', narrative);
+    revealBlock(paras, 0);
+  }
+
+  let histMsg = narrative;
+  if (Array.isArray(msg.options) && msg.options.length) {
+    histMsg += '\n【选项】\n' + msg.options.map((o) => '- ' + o).join('\n');
+  }
+  game.history.push({ role: 'assistant', content: histMsg });
+
+  renderOptions(msg.options || []);
+  mergeState(msg.stateDiff || {});
+
+  // 里程碑推进（后端已校验顺序）：更新面板 + 横幅
+  if (typeof msg.milestone === 'number' && msg.milestone >= 1) {
+    const prev = game.state.milestone || 1;
+    game.state.milestone = msg.milestone;
+    if (msg.milestoneAdvanced || msg.milestone > prev) {
+      appendMilestoneBanner(msg.milestone);
+    }
+    renderStatePanel();
+  }
+  stream = null;
 }
 
 // ================= 初始化 =================

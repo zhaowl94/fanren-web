@@ -163,6 +163,67 @@ async function callDeepSeek(messages, { temperature = 1.0, maxTokens = 2500 } = 
   return '';
 }
 
+// 流式调用 DeepSeek：逐块回调增量文本（onDelta），返回完整内容
+async function callDeepSeekStream(messages, onDelta, { temperature = 1.0, maxTokens = 2500 } = {}) {
+  let lastContent = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const resp = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+        stream: true,
+      }),
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      throw new Error(`DeepSeek API ${resp.status}: ${body.slice(0, 300)}`);
+    }
+
+    let content = '';
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        try {
+          const evt = JSON.parse(payload);
+          const delta = evt.choices?.[0]?.delta?.content || '';
+          if (delta) {
+            content += delta;
+            onDelta(delta);
+          }
+        } catch {
+          /* 忽略无法解析的行 */
+        }
+      }
+    }
+    if (content.trim()) {
+      lastContent = content;
+      break;
+    }
+    console.warn(`[DeepSeek 流式返回空内容，第 ${attempt} 次后重试]`);
+    await new Promise((r) => setTimeout(r, 800));
+  }
+  return lastContent;
+}
+
 // ================= 解析说书人输出 =================
 function safeParseJson(s) {
   try {
@@ -301,13 +362,20 @@ app.post('/api/config', async (req, res) => {
   res.json({ ok: true, persisted, configured: true, masked: maskKey(apiKey), baseUrl, model });
 });
 
-// 说书人主接口
+// 说书人主接口（NDJSON 流式）：text 增量 → parsing → done/error
 app.post('/api/chat', async (req, res) => {
   const { history = [], state = {}, summary = '', pastLife = null, mode = 'detailed' } = req.body || {};
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
   try {
     const systemPrompt = buildSystemPrompt({ state, summary, pastLife, mode });
     const messages = [{ role: 'system', content: systemPrompt }, ...history];
-    const raw = await callDeepSeek(messages);
+
+    // 流式转发 AI 增量文本，浏览器实时渲染
+    const raw = await callDeepSeekStream(messages, (delta) => {
+      res.write(JSON.stringify({ type: 'text', delta }) + '\n');
+    });
+
+    res.write(JSON.stringify({ type: 'parsing' }) + '\n');
     const parsed = parseNarration(raw);
 
     // 里程碑推进校验：引擎把关顺序，AI 不得跳跃/回退
@@ -342,18 +410,23 @@ app.post('/api/chat', async (req, res) => {
     const desired = Math.max(Number(reportedMs) || 0, beatTarget);
     const prog = validateMilestone(cur, desired);
 
-    res.json({
-      ok: true,
-      raw,
-      ...parsed,
-      milestone: prog.milestone,
-      milestoneAdvanced: prog.advanced,
-      nextMilestone: prog.advanced ? MILESTONES[prog.milestone - 1].title : null,
-    });
+    res.write(
+      JSON.stringify({
+        type: 'done',
+        ok: true,
+        narrative: parsed.narrative,
+        options: parsed.options,
+        stateDiff: parsed.stateDiff,
+        milestone: prog.milestone,
+        milestoneAdvanced: prog.advanced,
+        nextMilestone: prog.advanced ? MILESTONES[prog.milestone - 1].title : null,
+      }) + '\n'
+    );
   } catch (e) {
     console.error('[chat 失败]', e.message);
-    res.status(502).json({ ok: false, error: String(e.message || e) });
+    res.write(JSON.stringify({ type: 'error', error: String(e.message || e) }) + '\n');
   }
+  res.end();
 });
 
 // 里程碑总表（供前端显示剧情进度）

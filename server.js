@@ -66,7 +66,7 @@ const REPLY_MODES = {
   detailed:
     '【回复模式：详细（最高优先级，覆盖其他一切长度要求）】本轮叙述 300~600 字，细节、氛围、心理描写尽量丰满，切勿过短。',
   brief:
-    '【回复模式：简略（最高优先级，覆盖其他一切长度要求）】本轮叙述控制在 100~160 字，务必将本回合的关键事件与转折讲完整并自然收尾，不要写到一半被截断；不铺陈环境细节，不做多余心理描写，对话从简；即使此前回合的回复较长，本轮也必须从简。剧情推进、状态变化、选项与 milestone/beat 规则一律照常，不得因简略而跳过应有的剧情进展。',
+    '【回复模式：简略（最高优先级，覆盖其他一切长度要求）】本轮叙述控制在 120~160 字，围绕本回合的关键事件写一段完整、自然收尾的叙述——必须有结尾，禁止写到一半；不铺陈环境细节，不做多余心理描写，对话从简；即使此前回合的回复较长，本轮也必须从简。剧情推进、状态变化、选项与 milestone/beat 规则一律照常，不得因简略而跳过应有的剧情进展。',
 };
 
 function buildSystemPrompt({ state, summary, pastLife, mode = 'detailed' }) {
@@ -175,9 +175,8 @@ async function callDeepSeek(messages, { temperature = 1.0, maxTokens = 2500, thi
 }
 
 // 简略模式两段式补全：由短叙述生成完整【选项】+【状态】（含 beat）
-async function completeBriefFormat(raw, state) {
-  const parsed = parseNarration(raw);
-  const narrative = parsed.narrative || '';
+async function completeBriefFormat(narrativeText, state) {
+  const narrative = String(narrativeText || '').trim();
   try {
     const structPrompt = [
       '你是《凡人修仙传》互动小说的剧情结构化器。请根据以下本轮剧情叙述与当前世界状态，只输出两部分，不要输出任何叙述文字：',
@@ -410,6 +409,22 @@ app.post('/api/config', async (req, res) => {
   res.json({ ok: true, persisted, configured: true, masked: maskKey(apiKey), baseUrl, model });
 });
 
+// 按句子边界精简叙述（简略模式）：绝不中途截断，结尾必为完整句子
+function smartTrim(text, maxLen = 160, minLen = 40) {
+  const t = String(text || '').trim();
+  if (t.length <= maxLen) return t;
+  const window = t.slice(0, maxLen);
+  let cut = -1;
+  for (let i = window.length - 1; i >= minLen; i--) {
+    if ('。！？；!?;…'.includes(window[i])) {
+      cut = i + 1;
+      break;
+    }
+  }
+  if (cut <= 0) cut = window.length; // 兜底：找不到句子边界才硬截
+  return window.slice(0, cut).trim();
+}
+
 // 说书人主接口（NDJSON 流式）：text 增量 → parsing → done/error
 app.post('/api/chat', async (req, res) => {
   const { history = [], state = {}, summary = '', pastLife = null, mode = 'detailed' } = req.body || {};
@@ -418,20 +433,18 @@ app.post('/api/chat', async (req, res) => {
     const systemPrompt = buildSystemPrompt({ state, summary, pastLife, mode });
     const messages = [{ role: 'system', content: systemPrompt }, ...history];
 
-    // 简略模式：两段式——流式生成短叙述（max_tokens 硬顶，引擎强制从简）→ 结构化补全选项/状态
+    // 简略模式：两段式——缓冲生成完整叙述 → 句子边界精简（不截断）→ 流式下发精简文本 → 结构化补全选项/状态
     // 详细模式：单段流式生成 + 解析
     const isBrief = mode === 'brief';
     let parsed;
     if (isBrief) {
-      const briefRaw = await callDeepSeekStream(
-        messages,
-        (delta) => {
-          res.write(JSON.stringify({ type: 'text', delta }) + '\n');
-        },
-        { maxTokens: 140, thinking: false } // 叙述硬顶 ~170 字（实测中文约 0.75 token/字），选项/状态由第二段补全
-      );
+      const briefRaw = await callDeepSeekStream(messages, null, { maxTokens: 400, thinking: false });
+      const briefNarrative = smartTrim(parseNarration(briefRaw).narrative);
+      for (let i = 0; i < briefNarrative.length; i += 24) {
+        res.write(JSON.stringify({ type: 'text', delta: briefNarrative.slice(i, i + 24) }) + '\n');
+      }
       res.write(JSON.stringify({ type: 'parsing' }) + '\n');
-      parsed = await completeBriefFormat(briefRaw, state);
+      parsed = await completeBriefFormat(briefNarrative, state);
     } else {
       const raw = await callDeepSeekStream(
         messages,

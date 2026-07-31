@@ -25,6 +25,7 @@ const INITIAL_STATE = () => ({
   location: '七玄门',
   items: ['神秘小绿瓶'],
   milestone: 1, // 当前里程碑编号（见 /api/milestones）
+  day: 1, // 时间线：第 N 天（韩立约 15 岁起）
 });
 
 // 里程碑总表（启动时拉取，用于面板与横幅展示）
@@ -144,6 +145,7 @@ const el = {
   stLifespan: $('st-lifespan'),
   stStones: $('st-stones'),
   stLocation: $('st-location'),
+  stDay: $('st-day'),
   stMilestone: $('st-milestone'),
   stItems: $('st-items'),
   stTip: $('st-tip'),
@@ -161,6 +163,9 @@ function renderStatePanel() {
   el.stLifespan.textContent = s.lifespan != null ? `${s.lifespan} 岁` : '—';
   el.stStones.textContent = s.spiritStones != null ? `${s.spiritStones} 块` : '—';
   el.stLocation.textContent = s.location || '—';
+  const day = Math.max(1, Number(s.day) || 1);
+  const age = 15 + Math.floor((day - 1) / 365);
+  el.stDay.textContent = `第 ${day} 天 · ${age} 岁`;
   el.stMilestone.textContent = milestoneTitle(s.milestone) || (s.milestone ? `第 ${s.milestone} 章` : '—');
   el.stItems.innerHTML = '';
   (s.items || []).forEach((it) => {
@@ -801,6 +806,12 @@ function applyStreamDone(msg) {
 
   renderOptions(msg.options || []);
   mergeState(msg.stateDiff || {});
+
+  // 时间线推进（引擎维护）
+  if (typeof msg.day === 'number' && msg.day >= 1) {
+    game.state.day = Math.round(msg.day);
+    renderStatePanel();
+  }
 
   // 里程碑推进（后端已校验顺序与状态）：更新面板 + 横幅
   if (typeof msg.milestone === 'number' && msg.milestone >= 1) {

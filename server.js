@@ -72,7 +72,8 @@ const REPLY_MODES = {
 function buildSystemPrompt({ state, summary, pastLife, mode = 'detailed' }) {
   const curIdx = clampMilestone(state.milestone);
   const cur = MILESTONES[curIdx - 1];
-  const timeline = MILESTONES.map((m) => `${m.id}. ${m.title}（${m.vol}）：${m.hint}`).join('\n');
+  const curDay = Math.max(1, Number(state.day) || 1);
+  const timeline = MILESTONES.map((m) => `${m.id}. ${m.title}（${m.vol}，约第 ${m.minDay || 0} 天起）：${m.hint}`).join('\n');
 
   const parts = [
     `你是一位资深的仙侠小说说书人，正在为玩家讲述《凡人修仙传·人界篇》的故事，玩家扮演主角韩立。
@@ -86,12 +87,15 @@ function buildSystemPrompt({ state, summary, pastLife, mode = 'detailed' }) {
 
 【人界篇剧情轨道·里程碑（主线节点）】
 当前主线节点：第 ${curIdx} 个「${cur.title}」（${cur.vol}）
+当前时间：第 ${curDay} 天
 本节点关键事件：${cur.hint}
 
 规则（自由度设计）：
 - 【过程完全自由】在抵达下一主线节点之前，玩家可以自由探索、发展支线、游历坊市、经营营生、结交人物、做任何事。你要跟随玩家的行动自由发挥，不得把剧情强行拉回主线，不得否定或改写玩家的自由行动。支线经历可以很精彩、可以改变人物关系、可以带来机缘，只要不颠倒主线节点的顺序。
 - 【节点顺序必须遵守】只有主线节点的完成顺序不可颠倒或跳过：未识破墨大夫夺舍阴谋就离开七玄门加入黄枫谷、未结丹就结婴等，均属顺序颠倒，绝不允许。玩家可以先做支线、再回来完成节点，但顺序不变。
 - 支线/自创剧情不能充当主线节点的关键事件：只有原著主线事件真正发生（如墨大夫本人收韩立为徒、夺舍阴谋真正败露、墨大夫之祸真正了结、真的进入黄枫谷/乱星海）才算完成节点；玩家自创的类似情节（掌教密谈、杀死其他人物、坊市偶遇等）一律不推进里程碑。
+- 【时间线规则】游戏以"天"计时，每轮交互默认过 1 天；玩家要求闭关、等待、赶路等时间跳跃时，如实推进时间（三个月约 90 天、一年约 365 天）。时间流逝必须伴随实质进展（修炼进境、事件发生、关键节点推进），禁止用"平平无奇地过了三个月"这类空转敷衍。
+- 【时间锚点】每个节点有最早发生时间（见总表"约第 X 天起"）：时间未到不得提前完成；时间到了之后，应在叙述中自然安排该节点的事件发生，不要无故拖延（避免玩家觉得卡剧情）。
 - 每轮叙述前自检：当前节点的关键事件是否已完成？若已完成，在【状态】中输出 milestone（下一个编号，一次只能推进一个）；未完成则省略该字段。
 - 收徒完成、阴谋败露、了结墨大夫、拜入黄枫谷、禁地试炼结束、筑基/结丹/结婴成功、飞升等关键节点，都是必须上报的推进信号。
 - 若一轮叙述跨越了多个里程碑，只上报第一个完成的里程碑，其余留待后续自然展开。
@@ -411,6 +415,50 @@ function inferStateFromNarrative(narrative) {
   return s;
 }
 
+// ================= 时间线系统 =================
+// 从文本中提取时间跳跃天数（玩家输入 / AI 叙述）；未提及时间返回 0
+const CN_NUM = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+function cnNum(s) {
+  if (!s) return 0;
+  if (/^十/.test(s)) return 10 + (CN_NUM[s[1]] || 0);
+  if (s.includes('十')) {
+    const [a, b] = s.split('十');
+    return (CN_NUM[a] || 1) * 10 + (CN_NUM[b] || 0);
+  }
+  return CN_NUM[s] || 1;
+}
+
+function extractDayDelta(text) {
+  const t = String(text || '');
+  let m = t.match(/(\d+)\s*(?:个)?(?:天|日)/);
+  if (m) return Math.max(1, Number(m[1]));
+  m = t.match(/(\d+)\s*(?:个)?月/);
+  if (m) return Number(m[1]) * 30;
+  m = t.match(/(\d+)\s*年/);
+  if (m) return Number(m[1]) * 365;
+  m = t.match(/([一二两三四五六七八九十]+)\s*(?:天|日)/);
+  if (m) return Math.max(1, cnNum(m[1]));
+  m = t.match(/([一二两三四五六七八九十]+)\s*(?:个)?月/);
+  if (m) return cnNum(m[1]) * 30;
+  m = t.match(/([一二两三四五六七八九十]+)\s*年/);
+  if (m) return cnNum(m[1]) * 365;
+  if (/半年/.test(t)) return 180;
+  if (/半月/.test(t)) return 15;
+  if (/数(?:年|载)/.test(t)) return 730;
+  if (/数(?:个)?月/.test(t)) return 90;
+  if (/数(?:天|日)/.test(t)) return 5;
+  if (/几(?:年|载)/.test(t)) return 730;
+  if (/几(?:个)?月/.test(t)) return 90;
+  if (/几(?:天|日)/.test(t)) return 5;
+  return 0;
+}
+
+// 时间窗校验：目标里程碑最早完成天数
+function minDayFor(targetMilestone) {
+  const m = MILESTONES[targetMilestone - 1];
+  return m && typeof m.minDay === 'number' ? m.minDay : 0;
+}
+
 function parseNarration(text) {
   // 提取【状态】行（最后一个 { ... }）
   const stateMatch = text.match(/【状态】\s*(\{[\s\S]*\})/);
@@ -579,7 +627,18 @@ app.post('/api/chat', async (req, res) => {
     // - AI 未报（如自由 beat）→ 试探 cur+1：上下文含下一节点触发词则自动推进
     const aiDesired = Math.max(Number(reportedMs) || 0, BEAT_MILESTONE[beat] || 0);
     const target = aiDesired > cur ? Math.min(aiDesired, plausible) : (cur < plausible ? cur + 1 : cur);
-    const final = milestoneKeywordsOk(ctx, target) ? target : cur;
+
+    // 4. 时间线：每轮默认推进 1 天；从最近剧情上下文（玩家输入 + AI 叙述）提取时间跳跃
+    const recentAll = [...(history || [])]
+      .slice(-6)
+      .map((t) => String(t.content || ''))
+      .join('\n');
+    const dayDelta = Math.max(extractDayDelta(recentAll + '\n' + keywordText), 1);
+    const day = Math.max(1, (Number(state.day) || 1) + dayDelta);
+
+    // 5. 时间窗校验：目标节点未到最早天数不推进（防速通）
+    const timeOk = day >= minDayFor(target);
+    const final = milestoneKeywordsOk(ctx, target) && timeOk ? target : cur;
     const prog = validateMilestone(cur, final);
 
     res.write(
@@ -589,6 +648,7 @@ app.post('/api/chat', async (req, res) => {
         narrative: parsed.narrative,
         options: parsed.options,
         stateDiff: parsed.stateDiff,
+        day,
         milestone: prog.milestone,
         milestoneAdvanced: prog.advanced,
         milestoneCorrected: corrected,

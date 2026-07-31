@@ -91,6 +91,7 @@ function buildSystemPrompt({ state, summary, pastLife, mode = 'detailed' }) {
 规则（自由度设计）：
 - 【过程完全自由】在抵达下一主线节点之前，玩家可以自由探索、发展支线、游历坊市、经营营生、结交人物、做任何事。你要跟随玩家的行动自由发挥，不得把剧情强行拉回主线，不得否定或改写玩家的自由行动。支线经历可以很精彩、可以改变人物关系、可以带来机缘，只要不颠倒主线节点的顺序。
 - 【节点顺序必须遵守】只有主线节点的完成顺序不可颠倒或跳过：未识破墨大夫夺舍阴谋就离开七玄门加入黄枫谷、未结丹就结婴等，均属顺序颠倒，绝不允许。玩家可以先做支线、再回来完成节点，但顺序不变。
+- 支线/自创剧情不能充当主线节点的关键事件：只有原著主线事件真正发生（如墨大夫本人收韩立为徒、夺舍阴谋真正败露、墨大夫之祸真正了结、真的进入黄枫谷/乱星海）才算完成节点；玩家自创的类似情节（掌教密谈、杀死其他人物、坊市偶遇等）一律不推进里程碑。
 - 每轮叙述前自检：当前节点的关键事件是否已完成？若已完成，在【状态】中输出 milestone（下一个编号，一次只能推进一个）；未完成则省略该字段。
 - 收徒完成、阴谋败露、了结墨大夫、拜入黄枫谷、禁地试炼结束、筑基/结丹/结婴成功、飞升等关键节点，都是必须上报的推进信号。
 - 若一轮叙述跨越了多个里程碑，只上报第一个完成的里程碑，其余留待后续自然展开。
@@ -318,6 +319,98 @@ const BEAT_MILESTONE = {
   飞升: 14,
 };
 
+// ================= 里程碑校验（三层防线） =================
+
+// 状态交叉校验：地点/境界决定里程碑的物理上限（防 AI 虚报进度）
+const LOCATION_CAPS = [
+  [/七玄门|青牛镇|五里沟/, 4],
+  [/黄枫谷/, 7],
+  [/乱星海/, 9],
+  [/大晋/, 11],
+];
+const REALM_CAPS = [
+  [/凡人/, 5],
+  [/炼气/, 6],
+  [/筑基/, 9],
+  [/结丹/, 11],
+  [/元婴/, 13],
+  [/化神/, 14],
+];
+function plausibleMilestone(state) {
+  const loc = String(state.location || '');
+  const realm = String(state.realm || '');
+  let cap = MILESTONES.length;
+  for (const [re, c] of LOCATION_CAPS) {
+    if (re.test(loc)) {
+      cap = Math.min(cap, c);
+      break;
+    }
+  }
+  for (const [re, c] of REALM_CAPS) {
+    if (re.test(realm)) {
+      cap = Math.min(cap, c);
+      break;
+    }
+  }
+  return cap;
+}
+
+// 叙述关键词锚定：推进到目标里程碑要求剧情文本包含其全部触发词（防自创支线冒充主线节点）
+function milestoneKeywordsOk(narrative, targetMilestone) {
+  const m = MILESTONES[targetMilestone - 1];
+  if (!m || !Array.isArray(m.trigger) || !m.trigger.length) return true;
+  return m.trigger.every((re) => re.test(narrative || ''));
+}
+
+// 里程碑上下文：本轮叙述 + 最近 3 条 assistant 历史
+// （覆盖"事件先叙述、进度后上报"的延迟推进场景；同时让支线冒充主线更容易被识别）
+function milestoneContext(history, currentNarrative) {
+  const recent = (history || [])
+    .slice(-3)
+    .filter((t) => t.role === 'assistant')
+    .map((t) => String(t.content || '').split('\n【选项】')[0])
+    .join('\n');
+  return (recent ? recent + '\n' : '') + (currentNarrative || '');
+}
+
+// 叙述推断状态：AI 可能漏报地点/境界变化，用叙述中的强信号补足
+// （取叙述中最后出现的地点/境界表达，代表剧情最新推进方向）
+function inferStateFromNarrative(narrative) {
+  const n = narrative || '';
+  const s = {};
+  const locs = [
+    ['黄枫谷', '黄枫谷'],
+    ['乱星海', '乱星海'],
+    ['大晋', '大晋'],
+    ['昆吾山', '大晋'],
+  ];
+  let lastLoc = null;
+  for (const [kw, v] of locs) {
+    if (n.lastIndexOf(kw) >= 0) lastLoc = v;
+  }
+  if (lastLoc) s.location = lastLoc;
+  const realms = [
+    ['筑基成功', '筑基'],
+    ['顺利筑基', '筑基'],
+    ['突破筑基', '筑基'],
+    ['已筑基', '筑基'],
+    ['结成金丹', '结丹'],
+    ['结丹成功', '结丹'],
+    ['已结丹', '结丹'],
+    ['凝结元婴', '元婴'],
+    ['结婴成功', '元婴'],
+    ['已结婴', '元婴'],
+    ['进阶化神', '化神'],
+    ['已化神', '化神'],
+  ];
+  let lastRealm = null;
+  for (const [kw, v] of realms) {
+    if (n.lastIndexOf(kw) >= 0) lastRealm = v;
+  }
+  if (lastRealm) s.realm = lastRealm;
+  return s;
+}
+
 function parseNarration(text) {
   // 提取【状态】行（最后一个 { ... }）
   const stateMatch = text.match(/【状态】\s*(\{[\s\S]*\})/);
@@ -437,9 +530,11 @@ app.post('/api/chat', async (req, res) => {
     // 详细模式：单段流式生成 + 解析
     const isBrief = mode === 'brief';
     let parsed;
+    let keywordText = ''; // 关键词锚定使用的完整叙述（简略模式用未裁剪的原文）
     if (isBrief) {
       const briefRaw = await callDeepSeekStream(messages, null, { maxTokens: 400, thinking: false });
-      const briefNarrative = smartTrim(parseNarration(briefRaw).narrative);
+      keywordText = parseNarration(briefRaw).narrative;
+      const briefNarrative = smartTrim(keywordText);
       for (let i = 0; i < briefNarrative.length; i += 24) {
         res.write(JSON.stringify({ type: 'text', delta: briefNarrative.slice(i, i + 24) }) + '\n');
       }
@@ -455,39 +550,37 @@ app.post('/api/chat', async (req, res) => {
       );
       res.write(JSON.stringify({ type: 'parsing' }) + '\n');
       parsed = parseNarration(raw);
+      keywordText = parsed.narrative;
     }
 
-    // 里程碑推进校验：引擎把关顺序，AI 不得跳跃/回退
-    // 双信号：AI 上报的 milestone 编号 + beat 阶段词映射（取更靠后的一个）
-    const cur = clampMilestone(state.milestone);
+    // 里程碑推进校验（确定性规则，无模型兜底）：
+    // 1. AI 上报的 milestone 编号 + beat 阶段词映射（取更靠后的一个）
     const reportedMs = parsed.stateDiff.milestone;
-    let beat = String(parsed.stateDiff.beat || '').trim();
+    const beat = String(parsed.stateDiff.beat || '').trim();
     delete parsed.stateDiff.milestone;
     delete parsed.stateDiff.beat;
 
-    // 兜底：AI 漏报 beat 时，用一次轻量"阶段判定"调用补齐（比遵守完整输出格式可靠得多）
-    if (!beat && parsed.narrative) {
-      try {
-        const ext = await callDeepSeek(
-          [
-            {
-              role: 'system',
-              content:
-                '你是剧情阶段判定器。请阅读本轮剧情，从下列词中选出最符合"当前剧情所处阶段"的一个词，只输出该词本身，不要输出任何其他内容（不要引号、标点、解释）：\n入门测试、杂役、收徒、起疑、识破、了结、离开、入谷、禁地、筑基、出海、结丹、回天南、大晋、元婴、化神、飞升',
-            },
-            { role: 'user', content: '【本轮剧情】\n' + parsed.narrative },
-          ],
-          { temperature: 0.1, maxTokens: 150 } // 注意：v4-flash 有推理 token，额度太小会只输出推理、正文为空
-        );
-        beat = ext.trim().replace(/[「」"'“”‘’，。,.！？!?、]/g, '');
-      } catch (e) {
-        console.warn('[beat 兜底提取失败]', e.message);
-      }
+    // 剧情上下文（本轮叙述 + 最近历史），供关键词锚定使用
+    const ctx = milestoneContext(history, keywordText);
+
+    // 2. 状态交叉校验 + 自愈
+    // 回合结束后的状态：AI 上报的 diff + 叙述推断（AI 漏报地点/境界时补足）
+    const postState = Object.assign({}, state, parsed.stateDiff, inferStateFromNarrative(ctx));
+    const plausible = plausibleMilestone(postState);
+    let cur = clampMilestone(state.milestone);
+    let corrected = false;
+    if (cur > plausible) {
+      cur = plausible; // 自愈：里程碑超出状态上限（如旧档虚报进度）则修正
+      corrected = true;
     }
 
-    const beatTarget = BEAT_MILESTONE[beat] || 0;
-    const desired = Math.max(Number(reportedMs) || 0, beatTarget);
-    const prog = validateMilestone(cur, desired);
+    // 3. 关键词锚定（确定性）：推进目标必须被剧情上下文中的主线元素支撑
+    // - AI 报了推进信号 → 目标 = min(上报值, 状态上限)
+    // - AI 未报（如自由 beat）→ 试探 cur+1：上下文含下一节点触发词则自动推进
+    const aiDesired = Math.max(Number(reportedMs) || 0, BEAT_MILESTONE[beat] || 0);
+    const target = aiDesired > cur ? Math.min(aiDesired, plausible) : (cur < plausible ? cur + 1 : cur);
+    const final = milestoneKeywordsOk(ctx, target) ? target : cur;
+    const prog = validateMilestone(cur, final);
 
     res.write(
       JSON.stringify({
@@ -498,6 +591,7 @@ app.post('/api/chat', async (req, res) => {
         stateDiff: parsed.stateDiff,
         milestone: prog.milestone,
         milestoneAdvanced: prog.advanced,
+        milestoneCorrected: corrected,
         nextMilestone: prog.advanced ? MILESTONES[prog.milestone - 1].title : null,
       }) + '\n'
     );

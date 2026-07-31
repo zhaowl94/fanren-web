@@ -802,12 +802,14 @@ function applyStreamDone(msg) {
   renderOptions(msg.options || []);
   mergeState(msg.stateDiff || {});
 
-  // 里程碑推进（后端已校验顺序）：更新面板 + 横幅
+  // 里程碑推进（后端已校验顺序与状态）：更新面板 + 横幅
   if (typeof msg.milestone === 'number' && msg.milestone >= 1) {
     const prev = game.state.milestone || 1;
     game.state.milestone = msg.milestone;
     if (msg.milestoneAdvanced || msg.milestone > prev) {
       appendMilestoneBanner(msg.milestone);
+    } else if (msg.milestoneCorrected) {
+      appendSystem('⚠️ 里程碑已按当前剧情状态自动修正（此前进度与剧情不符）。');
     }
     renderStatePanel();
   }

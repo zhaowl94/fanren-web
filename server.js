@@ -579,15 +579,17 @@ function mergeNpcState(registered, clientState) {
 // 死亡检测：被杀（叙述关键词）+ 坐化（年龄超寿元）
 // 双向搜索：死亡词在角色名前（"毙命，墨居仁"）或后（"墨居仁……毙命"）都算
 // 排除否定/险象语境：没死、未死、不会死、差点死、险些死、几乎死
-// 坐化自愈：已标记"坐化"死亡但按当前数据年龄未超寿元 → 历史误判（如旧档缺境界），自动复活
+// 排除问句语境：死了吗/死了没有/死了？/被杀了吗（提问不算死亡证据）
+// 坐化自愈：已标记"坐化"死亡但按 diedAt 当天年龄未超寿元 → 历史误判（如旧档缺境界），自动复活
 function detectDeaths(ctx, npcs, day) {
   const out = {};
   const deathWords =
     '死了|已死|身亡|毙命|陨落|没了气息|再无生息|再无声息|没了声息|咽气|命丧|死透了|当场死亡|没了性命';
+  const notQ = '(?!吗|呢|么|没有|没|么事|[?？])';
   for (const [name, info] of Object.entries(npcs || {})) {
     if ((info.status || '存活') === '死亡') {
-      if (info.diedBy === '坐化' && npcAge(info, day) <= lifespanOf(info.realm)) {
-        // 误判自愈：境界/年龄补全后未超寿元，恢复存活（击杀死亡是叙述事实，绝不复活）
+      if (info.diedBy === '坐化' && npcAge(info, info.diedAt || day) <= lifespanOf(info.realm)) {
+        // 误判自愈：按死亡当天数据年龄未超寿元，恢复存活（击杀死亡是叙述事实，绝不复活）
         const revived = { ...info, status: '存活' };
         delete revived.diedAt;
         delete revived.diedBy;
@@ -602,19 +604,19 @@ function detectDeaths(ctx, npcs, day) {
     for (const alias of aliases) {
       if (died) break;
       const re = new RegExp(
-        `(没|未|不|岂会|不会|差点|险些|几乎)?(?:${alias}.{0,10}?(?:${deathWords})|(?:${deathWords}).{0,10}?${alias})`,
+        `(没|未|不|岂会|不会|差点|险些|几乎)?(?:${alias}.{0,10}?(没|未|不|差点|险些|几乎)?(?:${deathWords})${notQ}|(?:${deathWords})${notQ}.{0,10}?${alias})`,
         'g'
       );
       let m;
       while ((m = re.exec(ctx)) !== null) {
-        if (!m[1]) {
+        if (!m[1] && !m[2]) {
           died = true;
           break;
         }
       }
       if (died) break;
-      // 主动杀死表达：杀死/击杀/斩杀/除掉 + 角色名
-      const re2 = new RegExp(`(?:杀死|击杀|斩杀|杀掉|除掉|了结)${alias}`, 'g');
+      // 主动杀死表达：杀死/击杀/斩杀/除掉 + 角色名（问句排除）
+      const re2 = new RegExp(`(?:杀死|击杀|斩杀|杀掉|除掉|了结)${alias}${notQ}`, 'g');
       if (re2.test(ctx)) {
         died = true;
         break;

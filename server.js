@@ -69,11 +69,24 @@ const REPLY_MODES = {
     '【回复模式：简略（最高优先级，覆盖其他一切长度要求）】本轮叙述控制在 120~160 字，围绕本回合的关键事件写一段完整、自然收尾的叙述——必须有结尾，禁止写到一半；不铺陈环境细节，不做多余心理描写，对话从简；即使此前回合的回复较长，本轮也必须从简。剧情推进、状态变化、选项与 milestone/beat 规则一律照常，不得因简略而跳过应有的剧情进展。',
 };
 
-function buildSystemPrompt({ state, summary, pastLife, mode = 'detailed' }) {
+function buildSystemPrompt({ state, summary, pastLife, mode = 'detailed', segments = [], factCards = [] }) {
   const curIdx = clampMilestone(state.milestone);
   const cur = MILESTONES[curIdx - 1];
   const curDay = Math.max(1, Number(state.day) || 1);
   const timeline = MILESTONES.map((m) => `${m.id}. ${m.title}（${m.vol}，约第 ${m.minDay || 0} 天起）：${m.hint}`).join('\n');
+  // 记忆库组装：
+  // - 事实卡：未了结的全部注入（硬约束），按时间新→旧排序，上限 60 条
+  // - 摘要：最近 3 段完整注入；更早的段各取一行并入「远古概略」（控制窗口预算）
+  const activeCards = (factCards || [])
+    .filter((c) => c.status !== 'resolved')
+    .sort((a, b) => (b.day || 0) - (a.day || 0))
+    .slice(0, 60);
+  const segs = summary ? [{ id: 'seg-0', range: '远古', text: String(summary).trim() }, ...segments] : segments;
+  const recentSegs = segs.slice(-3);
+  const ancient = segs.slice(0, Math.max(0, segs.length - 3));
+  const ancientLine = ancient.length
+    ? `（远古概略：${ancient.map((s) => String(s.text || '').slice(0, 50)).join('；')}……）`
+    : '';
 
   const parts = [
     `你是一位资深的仙侠小说说书人，正在为玩家讲述《凡人修仙传·人界篇》的故事，玩家扮演主角韩立。
@@ -129,8 +142,19 @@ ${timeline}
    - 即使无任何变化，也必须输出【状态】行，如：{"dead":false,"beat":"杂役"}`,
   ];
 
-  if (summary) {
-    parts.push(`\n【大事记摘要】（此前剧情进展，叙述必须与摘要一致，不得矛盾）\n${summary}`);
+  // 事实卡：世界记忆硬约束（未了结的恩怨/承诺/伏笔/宝物）
+  if (activeCards.length) {
+    parts.push(
+      `\n【世界记忆·关键事实】（以下事实尚未了结，叙述必须与之一致，不得矛盾；玩家或剧情推进到事实了结时，自然反映即可）\n${activeCards
+        .map((c) => `- [${c.type}] ${c.text}（第 ${c.day || '?'} 天立）`)
+        .join('\n')}`
+    );
+  }
+
+  // 摘要：最近 3 段完整 + 更早段一行概略
+  if (recentSegs.length) {
+    const segLines = recentSegs.map((s) => `【${s.range}】\n${s.text}`);
+    parts.push(`\n【大事记摘要】（此前剧情进展，叙述必须与摘要一致，不得矛盾）\n${segLines.join('\n')}${ancientLine ? '\n' + ancientLine : ''}`);
   }
   if (pastLife) {
     parts.push(`\n【转世设定】这是韩立的转世新局：他带着上一世残存的模糊记忆（上一世死于：${pastLife}）。开场及后续请用"似曾相识"的笔法暗示这份记忆（既视感、梦境、直觉），让玩家有机会避开上世的死因。不要直接点破"重生"二字，点到为止。`);
@@ -748,10 +772,10 @@ function smartTrim(text, maxLen = 160, minLen = 40) {
 
 // 说书人主接口（NDJSON 流式）：text 增量 → parsing → done/error
 app.post('/api/chat', async (req, res) => {
-  const { history = [], state = {}, summary = '', pastLife = null, mode = 'detailed' } = req.body || {};
+  const { history = [], state = {}, summary = '', pastLife = null, mode = 'detailed', segments = [], factCards = [] } = req.body || {};
   res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
   try {
-    const systemPrompt = buildSystemPrompt({ state, summary, pastLife, mode });
+    const systemPrompt = buildSystemPrompt({ state, summary, pastLife, mode, segments, factCards });
     const messages = [{ role: 'system', content: systemPrompt }, ...history];
 
     // ================= 生成与校验（最多 2 次尝试：已死亡角色复活时带警告重试） =================
@@ -880,34 +904,152 @@ app.get('/api/milestones', (_req, res) => {
   res.json({ ok: true, milestones: MILESTONES });
 });
 
-// 大事记压缩：把已过期的剧情对话浓缩进摘要
+// 从文本提取 JSON 块（LLM 输出夹带说明文字时的兜底）：
+// 从第一个 { 到最后一个 }（JSON 内部嵌套对象时 lastIndexOf('{') 会取到内层，必须用 indexOf）
+function extractJsonBlock(text) {
+  const s = String(text || '');
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    return JSON.parse(s.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+// 事实卡类型白名单
+const FACT_TYPES = ['恩怨', '承诺', '伏笔', '宝物', '秘密', '关系', '地点', '其他'];
+
+// 常见姓氏表 + 名词后缀黑名单（防把"金丹"误判成人名）
+const SURNAMES = '赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳酆鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴谈宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万支柯昝管卢莫经房裘缪干解应宗丁宣贲邓郁单杭洪包诸左石崔吉钮龚程嵇邢滑裴陆荣翁荀羊於惠甄曲家封芮羿储靳汲邴糜松井段富巫乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘斜厉戎祖武符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸籍赖卓蔺屠蒙池乔阴郁胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰郦雍却璩桑桂濮牛寿通边扈燕冀郏浦尚农温别庄晏柴瞿阎充慕连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁勾敖融冷訾辛阚那简饶空曾毋沙乜养鞠须丰巢关蒯相查后荆红游竺权逯盖益桓公';
+const NAME_SUFFIX_BLOCK = /(金丹|灵石|灵草|灵药|灵液|法宝|功法|宗门|妖兽|丹药|坊市|山洞|禁地|阵旗|飞剑|玉简|符箓|灵田|山脉|海域|城池|家族|凡人|修士|师叔|师兄|掌门|长老|弟子|前辈|夫人|小姐|大爷|老丈|小厮|女子|男子|之人|之地|之气|之约|之命|之际|之宝|之祸)/;
+
+// 事实卡人物名交叉校验（防 LLM 幻觉）：
+// 1. 卡中提到的每个已注册人物，都必须出现在被浓缩的对话里（全部，防"真名+编造事件"）；
+// 2. 剔除注册人名后，剩余疑似人名（姓氏+1~2 字）也必须在对话里出现过（防编造人物）。
+//    对话中出现过的新人物（如临时 NPC）可以立卡——它确实存在于剧情里。
+// 韩立是主角，豁免校验。
+function validateFactCard(cardText, content, knownAliases) {
+  const text = String(cardText || '').trim();
+  if (!text) return null;
+  const mentioned = knownAliases.filter((a) => a && a !== '韩立' && text.includes(a));
+  if (mentioned.some((a) => !content.includes(a))) return null;
+  let rest = text;
+  for (const a of [...mentioned, '韩立']) rest = rest.split(a).join('');
+  // 疑似新人名：姓氏 + 恰好 2 个汉字（LLM 编造的多为 3 字全名；2 字组合误判率高故不检）
+  // 词表词（如"成金丹"含"金丹"）由黑名单包含匹配覆盖
+  const suspects = rest.match(new RegExp(`[${SURNAMES}][\u4e00-\u9fa5]{2}`, 'g')) || [];
+  for (const name of suspects) {
+    if (NAME_SUFFIX_BLOCK.test(name)) continue;
+    if (!content.includes(name)) return null;
+  }
+  return text;
+}
+
+// 大事记压缩：一段剧情对话 → 新摘要段 + 事实卡增量（新增/已了结标记）
+// 一次调用产出两部分；JSON 解析失败重试一次，仍失败则退化为纯摘要（旧记忆不丢）
 app.post('/api/summarize', async (req, res) => {
-  const { summary = '', turns = [] } = req.body || {};
+  const { segments = [], factCards = [], turns = [], day = 1, npcs = {} } = req.body || {};
+  // 兼容旧调用：只有 summary 字符串的旧档 → 迁移为第一段摘要
+  const summaryLegacy = req.body.summary;
+  const segs = summaryLegacy ? [{ id: 'seg-0', range: '远古', text: String(summaryLegacy).trim() }, ...segments] : segments;
   const content = turns
     .slice(-60) // 一次最多浓缩 60 条，防请求过大
     .map((t) => `${t.role === 'user' ? '玩家' : '说书人'}：${t.content}`)
     .join('\n');
   if (!content) {
-    return res.json({ ok: true, summary });
+    return res.json({ ok: true, segments: segs, factCards });
   }
   try {
+    const activeCards = (factCards || []).filter((c) => c.status !== 'resolved');
+    const oldCardsText = activeCards.length
+      ? activeCards.map((c) => `- [${c.id}]（${c.type}）${c.text}`).join('\n')
+      : '（无）';
     const prompt = [
-      '你是《凡人修仙传·人界篇》互动小说的剧情书记官。下面是一段已经过去的剧情对话，以及已有的大事记摘要。',
-      '请把这段剧情浓缩成 2~4 句要点，与已有摘要合并，输出【更新后的完整大事记摘要】。',
-      '要点应包含：剧情阶段进展、关键事件、重要人物关系变化、韩立的境界/宝物/隐患。语言简洁，中文。',
-      `【已有摘要】\n${summary || '（无）'}`,
+      '你是《凡人修仙传·人界篇》互动小说的剧情书记官，负责维护游戏的世界记忆。下面是一段即将从上下文移除的过期剧情对话，以及当前记忆库。',
+      '任务一：把这段剧情浓缩成 2~4 句要点，作为一段【新的大事记】（只写本段要点，不重写旧段）。',
+      '任务二：从剧情中提取【关键事实卡】——只提取对后续剧情可能重要的事：恩怨、承诺/约定、未解伏笔、重要宝物及其去向、秘密/把柄、人物关系变化。每条一句话，注明类型。',
+      '  - 流水账（赶路、修炼日常、无关对话）不要立卡；韩立本人的境界突破/常规所得不必立卡（状态面板已记录）。',
+      '  - 重点：人与人的承诺恩怨、未了结的事、藏在背后的阴谋。',
+      '任务三：对照【已有事实卡】，把已经了结的卡（承诺兑现、恩怨了结、伏笔揭晓、宝物已毁/已失）在 resolved 中给出其 id（照抄，不要改写）。',
+      `【已有事实卡】\n${oldCardsText}`,
       `【待浓缩剧情】\n${content}`,
+      '【输出格式】',
+      '【摘要】',
+      '（2~4 句要点）',
+      '【事实卡】',
+      '{"added":[{"type":"恩怨|承诺|伏笔|宝物|秘密|关系|地点|其他","text":"一句话","day":' + day + '}],"resolved":[{"id":"fc-xxx","reason":"一句话"}]}',
     ].join('\n');
-    const raw = await callDeepSeek(
-      [
-        { role: 'system', content: '你是一位严谨的剧情书记官，输出必须与已有摘要保持一致。' },
-        { role: 'user', content: prompt },
-      ],
-      { temperature: 0.3, maxTokens: 800 }
+
+    // 解析尝试（最多 2 次）：要求 JSON 严格输出
+    let raw = '';
+    let json = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const msgs = [
+        { role: 'system', content: '你是严谨的剧情书记官，输出必须与已有记忆一致。【事实卡】必须输出严格 JSON，不得夹带说明文字。' },
+        { role: 'user', content: attempt === 0 ? prompt : `${prompt}\n\n上次输出不合格：【事实卡】必须是严格 JSON（{"added":[...],"resolved":[...]}），不要其他格式。` },
+      ];
+      raw = await callDeepSeek(msgs, { temperature: 0.3, maxTokens: 1400, thinking: false });
+      json = extractJsonBlock(raw);
+      if (json) break;
+    }
+
+    // 摘要段：提取【摘要】与【事实卡】之间的文本
+    let segText = '';
+    const segMatch = raw.match(/【摘要】([\s\S]*?)(【事实卡】|$)/);
+    if (segMatch && segMatch[1].trim()) {
+      segText = segMatch[1].trim();
+    } else {
+      const beforeJson = raw.slice(0, raw.indexOf('{'));
+      segText = beforeJson.replace(/【摘要】/g, '').trim();
+    }
+    if (!segText) segText = '（本轮剧情无特别要点）';
+
+    // 事实卡合并：新增卡做人物名校验；resolved 按 id 精确匹配，失败按文本模糊匹配
+    const knownAliases = [
+      '韩立',
+      ...Object.entries({ ...INITIAL_NPCS, ...npcs }).flatMap(([name, n]) => [name, ...(n.aliases || [])]),
+    ];
+    const now = Date.now();
+    const newCards = [];
+    if (json && Array.isArray(json.added)) {
+      for (const c of json.added) {
+        const t = validateFactCard(c && c.text, content, knownAliases);
+        if (!t) continue;
+        const type = FACT_TYPES.includes(c.type) ? c.type : '其他';
+        newCards.push({
+          id: `fc-${now.toString(36)}-${newCards.length}`,
+          type,
+          text: t,
+          day: Number(c.day) || day,
+          status: 'active',
+        });
+      }
+    }
+    const resolvedIds = new Set();
+    if (json && Array.isArray(json.resolved)) {
+      for (const r of json.resolved) {
+        const id = typeof r === 'string' ? r : r && r.id;
+        if (id && (factCards || []).some((c) => c.id === id)) {
+          resolvedIds.add(id);
+          continue;
+        }
+        const hint = typeof r === 'string' ? r : r && (r.reason || r.text);
+        if (hint) {
+          const hit = (factCards || []).find((c) => c.status !== 'resolved' && (c.text.includes(hint) || hint.includes(c.text)));
+          if (hit) resolvedIds.add(hit.id);
+        }
+      }
+    }
+    const nextCards = (factCards || []).map((c) =>
+      resolvedIds.has(c.id) ? { ...c, status: 'resolved', resolvedDay: day } : c
     );
+    const newSeg = { id: `seg-${segs.length}`, range: `第 ${segs.length + 1} 段`, text: segText };
     res.json({
       ok: true,
-      summary: raw.replace(/^【更新后的完整大事记摘要】\s*/, '').trim(),
+      segments: [...segs, newSeg],
+      factCards: [...nextCards, ...newCards],
     });
   } catch (e) {
     console.error('[summarize 失败]', e.message);

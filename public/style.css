@@ -210,6 +210,41 @@ body {
   font-weight: 600;
 }
 .stat-npcs li.npc-unknown { color: #b8a97e; font-style: italic; }
+
+/* 记忆库 */
+.stat-memory { display: block; }
+.stat-memory ul {
+  margin-top: 6px;
+  padding-left: 0;
+  list-style: none;
+}
+.stat-memory li {
+  position: relative;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 2px 0;
+  color: var(--ink-soft);
+}
+.stat-memory li.mem-active { color: #8a7a4a; }
+.stat-memory li.mem-resolved { color: #a9a08a; text-decoration: line-through; text-decoration-color: rgba(169, 160, 138, 0.5); }
+.stat-memory li.mem-active span { display: inline-block; padding-right: 18px; }
+.stat-memory li .mem-del {
+  position: absolute;
+  right: 0;
+  top: 1px;
+  background: none;
+  border: none;
+  color: var(--cinnabar);
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0.45;
+  padding: 0 2px;
+  line-height: 1.2;
+}
+.stat-memory li .mem-del:hover { opacity: 1; }
+.stat-memory details.mem-segs { margin-top: 6px; font-size: 12px; color: var(--ink-soft); }
+.stat-memory details.mem-segs summary { cursor: pointer; color: #8a7a4a; }
+.stat-memory details.mem-segs p { margin: 4px 0; line-height: 1.5; }
 .stat-milestone .value { color: var(--cinnabar); font-size: 13px; text-align: right; }
 .stat-items ul { margin-top: 6px; padding-left: 18px; list-style: none; }
 .stat-items li { position: relative; font-size: 13px; padding: 2px 0; }

@@ -68,6 +68,8 @@ function saveCurrentSlot() {
     history: game.history,
     state: game.state,
     summary: game.summary,
+    summarySegments: game.summarySegments || [],
+    factCards: game.factCards || [],
     pastLife: game.pastLife,
     turnCount: game.turnCount,
     updatedAt: Date.now(),
@@ -83,6 +85,8 @@ function readSlot(name) {
     history: s.history || [],
     state: Object.assign(INITIAL_STATE(), s.state || {}),
     summary: s.summary || '',
+    summarySegments: s.summarySegments || [],
+    factCards: s.factCards || [],
     pastLife: s.pastLife || null,
     turnCount: s.turnCount || 0,
   };
@@ -99,7 +103,10 @@ let game = {
   slot: null,
   history: [],
   state: INITIAL_STATE(),
-  summary: '',
+  summary: '', // 兼容旧档：只有 summary 字符串时作为远古摘要段
+  summarySegments: [], // 分段大事记 [{id, range, text}]（新档主用）
+  factCards: [], // 世界记忆卡 [{id, type, text, day, status: active|resolved, resolvedDay}]
+  pendingCompress: [], // 压缩失败待重试的过期对话
   pastLife: null,
   turnCount: 0,
   busy: false,
@@ -150,6 +157,7 @@ const el = {
   stMilestone: $('st-milestone'),
   stItems: $('st-items'),
   stNpcs: $('st-npcs'),
+  stMemory: $('st-memory'),
   stTip: $('st-tip'),
   slotModal: $('slotModal'),
   slotList: $('slotList'),
@@ -200,6 +208,50 @@ function renderStatePanel() {
       }
       el.stNpcs.appendChild(li);
     });
+  }
+
+  // 记忆库：未了结事实卡（✦ 可删除）+ 已了结（✓ 灰显）+ 大事记折叠
+  el.stMemory.innerHTML = '';
+  const cards = game.factCards || [];
+  const segs = game.summarySegments || [];
+  if (!cards.length && !segs.length) {
+    const li = document.createElement('li');
+    li.className = 'npc-unknown';
+    li.textContent = '（剧情深入后自动记录）';
+    el.stMemory.appendChild(li);
+  } else {
+    cards.slice(0, 30).forEach((card) => {
+      const li = document.createElement('li');
+      li.className = card.status === 'resolved' ? 'mem-resolved' : 'mem-active';
+      li.title = card.status === 'resolved' ? `已了结（第 ${card.resolvedDay ?? '?'} 天）` : `第 ${card.day ?? '?'} 天立`;
+      const span = document.createElement('span');
+      span.textContent = `${card.status === 'resolved' ? '✓' : '✦'} [${card.type}] ${card.text}`;
+      li.appendChild(span);
+      if (card.status !== 'resolved') {
+        const del = document.createElement('button');
+        del.className = 'mem-del';
+        del.textContent = '×';
+        del.title = '删除这条记忆';
+        del.addEventListener('click', () => removeFactCard(card.id));
+        li.appendChild(del);
+      }
+      el.stMemory.appendChild(li);
+    });
+    if (segs.length) {
+      const det = document.createElement('details');
+      det.className = 'mem-segs';
+      const sum = document.createElement('summary');
+      sum.textContent = `大事记（${segs.length} 段${game.pendingCompress.length ? ' · 压缩待重试' : ''}）`;
+      const box = document.createElement('div');
+      segs.slice(-3).forEach((seg) => {
+        const p = document.createElement('p');
+        p.textContent = `【${seg.range}】${seg.text}`;
+        box.appendChild(p);
+      });
+      det.appendChild(sum);
+      det.appendChild(box);
+      el.stMemory.appendChild(det);
+    }
   }
 }
 
@@ -345,8 +397,8 @@ async function sendTurn(userText, opts = {}) {
   game.history.push({ role: 'user', content: userText });
   game.turnCount++;
 
-  // 历史压缩：超长时把最老的一批送去浓缩为大事记（异步，不阻塞）
-  if (game.history.length > MAX_KEEP_TURNS * 2) {
+  // 历史压缩：超长或上次压缩失败时，把最老的一批送去浓缩为大事记+事实卡（异步，不阻塞）
+  if (game.history.length > MAX_KEEP_TURNS * 2 || game.pendingCompress.length) {
     const keep = game.history.slice(-(MAX_KEEP_TURNS * 2));
     const dropped = game.history.slice(0, game.history.length - MAX_KEEP_TURNS * 2);
     game.history = keep;
@@ -363,6 +415,8 @@ async function sendTurn(userText, opts = {}) {
           history: game.history,
           state: game.state,
           summary: game.summary,
+          segments: game.summarySegments,
+          factCards: game.factCards,
           pastLife: game.pastLife,
           mode: replyMode,
         }),
@@ -423,22 +477,44 @@ function applyAssistant(data) {
   revealBlock(paras);
 }
 
-// 大事记压缩（异步）
+// 大事记压缩（异步）：产出新摘要段 + 事实卡增量；失败时留待下次重试，不静默丢记忆
 async function summarizeAsync(droppedTurns) {
+  const all = [...(game.pendingCompress || []), ...droppedTurns];
+  game.pendingCompress = [];
   try {
     const resp = await fetch('/api/summarize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ summary: game.summary, turns: droppedTurns }),
+      body: JSON.stringify({
+        segments: game.summarySegments || [],
+        factCards: game.factCards || [],
+        turns: all,
+        day: Number(game.state.day) || 1,
+        npcs: game.state.npcs || {},
+      }),
     });
     const data = await resp.json();
-    if (resp.ok && data.ok !== false && data.summary) {
-      game.summary = data.summary;
+    if (resp.ok && data.ok !== false) {
+      if (Array.isArray(data.segments)) game.summarySegments = data.segments;
+      if (Array.isArray(data.factCards)) game.factCards = data.factCards;
+      if (game.summary) game.summary = ''; // 已迁移进分段摘要，旧字段清空
       saveCurrentSlot();
+      renderStatePanel();
+    } else {
+      game.pendingCompress = all; // 压缩失败：并入下次触发重试
+      console.warn('[大事记压缩失败]', data && data.error);
     }
   } catch (e) {
+    game.pendingCompress = all;
     console.warn('[大事记压缩失败]', e);
   }
+}
+
+// 手动删除一条记忆（玩家是记忆的最终仲裁者）
+function removeFactCard(id) {
+  game.factCards = (game.factCards || []).filter((c) => c.id !== id);
+  saveCurrentSlot();
+  renderStatePanel();
 }
 
 // ================= 新游戏 / 转世 =================
@@ -451,6 +527,9 @@ function startNewGame({ reincarnate = false } = {}) {
     history: [],
     state: INITIAL_STATE(),
     summary: '',
+    summarySegments: [],
+    factCards: [],
+    pendingCompress: [],
     pastLife: reincarnate ? oldDeath : null,
     turnCount: 0,
     busy: false,
@@ -569,11 +648,13 @@ function renderFull() {
 
 function exportSave() {
   const data = {
-    version: 1,
+    version: 2,
     slot: game.slot || '未命名',
     history: game.history,
     state: game.state,
     summary: game.summary,
+    summarySegments: game.summarySegments,
+    factCards: game.factCards,
     pastLife: game.pastLife,
     turnCount: game.turnCount,
     exportedAt: Date.now(),
@@ -604,6 +685,9 @@ function importSave(file) {
         history: data.history,
         state: Object.assign(INITIAL_STATE(), data.state || {}),
         summary: data.summary || '',
+        summarySegments: data.summarySegments || [],
+        factCards: data.factCards || [],
+        pendingCompress: [],
         pastLife: data.pastLife || null,
         turnCount: data.turnCount || 0,
         busy: false,

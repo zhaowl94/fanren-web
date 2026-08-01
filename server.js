@@ -159,7 +159,7 @@ ${timeline}
   if (pastLife) {
     parts.push(`\n【转世设定】这是韩立的转世新局：他带着上一世残存的模糊记忆（上一世死于：${pastLife}）。开场及后续请用"似曾相识"的笔法暗示这份记忆（既视感、梦境、直觉），让玩家有机会避开上世的死因。不要直接点破"重生"二字，点到为止。`);
   }
-  parts.push(npcPromptBlock(state.npcs || INITIAL_NPCS, curDay));
+  parts.push(npcPromptBlock(mergeNpcState(INITIAL_NPCS, state.npcs || {}), curDay));
   parts.push(`\n【当前世界状态】\n${JSON.stringify(state, null, 2)}`);
 
   return parts.join('\n');
@@ -549,16 +549,52 @@ function npcAge(info, day) {
   return start + Math.floor(Math.max(0, day - 1) / 365);
 }
 
+// 合并注册表与客户端 NPC 状态（防旧档条目覆盖权威默认）：
+// 注册表（INITIAL_NPCS）提供境界/起始年龄/别名的权威默认；
+// 客户端条目保留生死/死因/死亡日等历史，缺失字段用注册表补全。
+// 否则旧格式条目（只有 {status}，无 realm）会覆盖注册表，导致寿元按凡人 90 岁误判、全员坐化。
+function mergeNpcState(registered, clientState) {
+  const out = {};
+  for (const [name, reg] of Object.entries(registered || {})) {
+    const c = (clientState || {})[name];
+    if (!c) {
+      out[name] = reg;
+      continue;
+    }
+    out[name] = {
+      ...reg,
+      ...c,
+      realm: typeof c.realm === 'string' && c.realm ? c.realm : reg.realm,
+      ageAtStart: typeof c.ageAtStart === 'number' ? c.ageAtStart : reg.ageAtStart,
+      aliases: Array.isArray(c.aliases) && c.aliases.length ? c.aliases : reg.aliases,
+    };
+  }
+  // 注册表之外的新 NPC（AI 引入的新人物）
+  for (const [name, c] of Object.entries(clientState || {})) {
+    if (!(registered || {})[name]) out[name] = c;
+  }
+  return out;
+}
+
 // 死亡检测：被杀（叙述关键词）+ 坐化（年龄超寿元）
 // 双向搜索：死亡词在角色名前（"毙命，墨居仁"）或后（"墨居仁……毙命"）都算
 // 排除否定/险象语境：没死、未死、不会死、差点死、险些死、几乎死
+// 坐化自愈：已标记"坐化"死亡但按当前数据年龄未超寿元 → 历史误判（如旧档缺境界），自动复活
 function detectDeaths(ctx, npcs, day) {
   const out = {};
   const deathWords =
     '死了|已死|身亡|毙命|陨落|没了气息|再无生息|再无声息|没了声息|咽气|命丧|死透了|当场死亡|没了性命';
   for (const [name, info] of Object.entries(npcs || {})) {
     if ((info.status || '存活') === '死亡') {
-      out[name] = info;
+      if (info.diedBy === '坐化' && npcAge(info, day) <= lifespanOf(info.realm)) {
+        // 误判自愈：境界/年龄补全后未超寿元，恢复存活（击杀死亡是叙述事实，绝不复活）
+        const revived = { ...info, status: '存活' };
+        delete revived.diedAt;
+        delete revived.diedBy;
+        out[name] = revived;
+      } else {
+        out[name] = info;
+      }
       continue;
     }
     const aliases = [name, ...(info.aliases || [])];
@@ -601,6 +637,7 @@ function detectDeaths(ctx, npcs, day) {
 
 // 合并 AI 上报的人物信息：新增角色登记；已知角色只接受境界成长（realm）
 // 生死状态只认引擎检测，年龄由引擎按时间线计算
+// 境界更新防降级：新境界寿元必须 >= 旧境界寿元才接受（防 AI 把元婴/化神写成凡人导致寿元误判）
 function mergeReportedNpcs(npcs, reported) {
   const out = { ...npcs };
   if (!reported || typeof reported !== 'object') return out;
@@ -609,7 +646,9 @@ function mergeReportedNpcs(npcs, reported) {
     if (!key) continue;
     if (out[key]) {
       if (typeof v === 'object' && v !== null && typeof v.realm === 'string' && v.realm) {
-        out[key] = { ...out[key], realm: v.realm };
+        if (lifespanOf(v.realm) >= lifespanOf(out[key].realm)) {
+          out[key] = { ...out[key], realm: v.realm };
+        }
       }
       continue;
     }
@@ -857,7 +896,7 @@ app.post('/api/chat', async (req, res) => {
       // ---- NPC 状态 ----
       const reportedNpcs = parsed.stateDiff.npcs;
       delete parsed.stateDiff.npcs;
-      const npcsBase = mergeReportedNpcs(Object.assign({}, INITIAL_NPCS, state.npcs || {}), reportedNpcs);
+      const npcsBase = mergeReportedNpcs(mergeNpcState(INITIAL_NPCS, state.npcs || {}), reportedNpcs);
       const wideCtx =
         [...(history || [])]
           .slice(-10)

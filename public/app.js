@@ -107,6 +107,7 @@ let game = {
   summarySegments: [], // 分段大事记 [{id, range, text}]（新档主用）
   factCards: [], // 世界记忆卡 [{id, type, text, day, status: active|resolved, resolvedDay}]
   pendingCompress: [], // 压缩失败待重试的过期对话
+  lifespanWarning: false, // 韩立寿元危机警告（引擎维护：超寿元首轮警告，下轮未突破则坐化）
   pastLife: null,
   turnCount: 0,
   busy: false,
@@ -417,6 +418,7 @@ async function sendTurn(userText, opts = {}) {
           summary: game.summary,
           segments: game.summarySegments,
           factCards: game.factCards,
+          lifespanWarning: !!game.lifespanWarning,
           pastLife: game.pastLife,
           mode: replyMode,
         }),
@@ -622,7 +624,7 @@ function showSlotModal() {
 function loadSlotInto(name) {
   const g = readSlot(name);
   if (!g) return;
-  game = Object.assign({}, game, g, { busy: false });
+  game = Object.assign({}, game, g, { busy: false, lifespanWarning: false });
   el.slotName.textContent = name;
   el.deathOverlay.classList.add('hidden');
   el.input.disabled = false;
@@ -929,6 +931,15 @@ function applyStreamDone(msg) {
   if (msg.npcs && typeof msg.npcs === 'object') {
     game.state.npcs = msg.npcs;
     renderStatePanel();
+  }
+
+  // 韩立寿元（引擎按境界计算，覆盖 AI 上报的僵尸值）
+  if (typeof msg.lifespan === 'number' && msg.lifespan >= 1) {
+    game.state.lifespan = Math.round(msg.lifespan);
+    renderStatePanel();
+  }
+  if (typeof msg.lifespanWarning === 'boolean') {
+    game.lifespanWarning = msg.lifespanWarning;
   }
 
   // 里程碑推进（后端已校验顺序与状态）：更新面板 + 横幅

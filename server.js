@@ -160,6 +160,13 @@ ${timeline}
     parts.push(`\n【转世设定】这是韩立的转世新局：他带着上一世残存的模糊记忆（上一世死于：${pastLife}）。开场及后续请用"似曾相识"的笔法暗示这份记忆（既视感、梦境、直觉），让玩家有机会避开上世的死因。不要直接点破"重生"二字，点到为止。`);
   }
   parts.push(npcPromptBlock(mergeNpcState(INITIAL_NPCS, state.npcs || {}), curDay));
+  // 韩立寿元：引擎按境界计算（不依赖 AI 上报），超寿元注入危机指令
+  const heroAge = 15 + Math.floor(Math.max(0, curDay - 1) / 365);
+  const heroCap = lifespanOf(state.realm || '');
+  const heroOver = heroAge > heroCap;
+  parts.push(
+    `\n【韩立寿元】韩立：${heroAge} 岁，${state.realm || '凡人'}期（寿元约 ${heroCap} 岁）${heroOver ? `——已超寿元 ${heroAge - heroCap} 年，寿元枯竭！本回合必须体现衰老与死期将至的紧迫感，并在叙述中暗示自救方向（突破境界或寻求延寿机缘）。若玩家本回合突破境界（realm 变化）则危机解除；若玩家在上一轮已收到警告后仍未突破或延寿，韩立将坐化。` : ''}`
+  );
   parts.push(`\n【当前世界状态】\n${JSON.stringify(state, null, 2)}`);
 
   return parts.join('\n');
@@ -813,7 +820,7 @@ function smartTrim(text, maxLen = 160, minLen = 40) {
 
 // 说书人主接口（NDJSON 流式）：text 增量 → parsing → done/error
 app.post('/api/chat', async (req, res) => {
-  const { history = [], state = {}, summary = '', pastLife = null, mode = 'detailed', segments = [], factCards = [] } = req.body || {};
+  const { history = [], state = {}, summary = '', pastLife = null, mode = 'detailed', segments = [], factCards = [], lifespanWarning = false } = req.body || {};
   res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
   try {
     const systemPrompt = buildSystemPrompt({ state, summary, pastLife, mode, segments, factCards });
@@ -827,6 +834,8 @@ app.post('/api/chat', async (req, res) => {
     let npcs = null;
     let prog = null;
     let corrected = false;
+    let heroCap = lifespanOf(state.realm || ''); // 韩立寿元上限（引擎按境界计算）
+    let newLifespanWarning = false;
     const retryWarnings = [];
 
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -910,12 +919,47 @@ app.post('/api/chat', async (req, res) => {
 
       // ---- 一致性校验：已死亡角色不得活人登场 ----
       const conflictNpc = deadNpcAppearsAlive(keywordText, npcs);
-      if (!conflictNpc) break;
-      retryWarnings.push({
-        role: 'system',
-        content: `【一致性警告】上一版叙述中，已死亡人物「${conflictNpc}」以活人身份登场，与【人物状态】冲突。请重写本轮叙述：该人物已死亡，不得让其活人登场、说话或行动；若玩家要求与其互动，改写为合理剧情（调查遗物、回忆往事、询问他人），并保持本轮剧情正常进展。`,
-      });
-      console.warn(`[npc 矛盾] ${conflictNpc} 复活，重试第 ${attempt + 2} 次`);
+      if (conflictNpc) {
+        retryWarnings.push({
+          role: 'system',
+          content: `【一致性警告】上一版叙述中，已死亡人物「${conflictNpc}」以活人身份登场，与【人物状态】冲突。请重写本轮叙述：该人物已死亡，不得让其活人登场、说话或行动；若玩家要求与其互动，改写为合理剧情（调查遗物、回忆往事、询问他人），并保持本轮剧情正常进展。`,
+        });
+        console.warn(`[npc 矛盾] ${conflictNpc} 复活，重试第 ${attempt + 2} 次`);
+        continue;
+      }
+
+      // ---- 韩立寿元（引擎判定）：年龄超境界寿元 → 危机 → 未突破/延寿则坐化 ----
+      // 危机机制：超寿元首轮只警告（AI 写死期将至+自救方向），玩家突破（realm 变化）即解除；
+      // 若上一轮已警告而本轮仍未突破且叙述无延寿机缘 → 强制坐化（dead:true）
+      const heroAge = 15 + Math.floor(Math.max(0, day - 1) / 365);
+      heroCap = lifespanOf(state.realm || '');
+      // 韩立境界防降级：AI 上报境界寿元低于当前 → 忽略（防把筑基报成凡人导致寿元误判）
+      if (parsed.stateDiff.realm && lifespanOf(String(parsed.stateDiff.realm)) < heroCap) {
+        delete parsed.stateDiff.realm;
+      }
+      // 突破判定：新境界寿元必须严格大于当前（同级变化如筑基初期→后期不算突破）
+      const realmChanged = parsed.stateDiff.realm && lifespanOf(String(parsed.stateDiff.realm)) > heroCap;
+      newLifespanWarning = false;
+      if (heroAge > heroCap) {
+        if (realmChanged) {
+          newLifespanWarning = false; // 本回合突破境界 → 危机解除
+        } else if (lifespanWarning && !/增寿|延寿|续命|寿元大增|寿元暴涨|延年益寿|寿元之药|延寿丹/.test(keywordText)) {
+          // 上一轮已警告，仍未突破/延寿 → 强制坐化
+          parsed.stateDiff.dead = true;
+          parsed.stateDiff.deathReason = parsed.stateDiff.deathReason || `寿元耗尽（${heroAge} 岁，${heroCap} 岁大限）`;
+          if (!/(坐化|寿元耗尽|寿元已尽|油尽灯枯|溘然长逝|含笑而逝|寿终|大限已至|垂垂老矣|老态龙钟)/.test(keywordText)) {
+            // 叙述未写死亡场景 → 重试
+            retryWarnings.push({
+              role: 'system',
+              content: `【寿元警告】韩立寿元已尽（${heroAge} 岁 > ${heroCap} 岁大限），本回合必须改写叙述：韩立坐化/寿元耗尽而死，并在【状态】输出 dead:true 与 deathReason。`,
+            });
+            console.warn(`[寿元] 韩立 ${heroAge} 岁 > ${heroCap} 岁，叙述未写死亡，重试第 ${attempt + 2} 次`);
+            continue;
+          }
+        } else {
+          newLifespanWarning = true; // 首轮危机：警告不判死
+        }
+      }
     }
 
     res.write(
@@ -927,6 +971,8 @@ app.post('/api/chat', async (req, res) => {
         stateDiff: parsed.stateDiff,
         day,
         npcs,
+        lifespan: heroCap,
+        lifespanWarning: newLifespanWarning,
         milestone: prog.milestone,
         milestoneAdvanced: prog.advanced,
         milestoneCorrected: corrected,
